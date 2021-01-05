@@ -38,6 +38,14 @@ const (
 	Unknown
 )
 
+var (
+	extentMap    = map[int64]*Extent{}
+	dataMap      = map[int64]DataType{}
+	fileMap      = FileMap{}
+	inodeFileMap = map[int64]uint64{}
+	inodes       = []Inode{}
+)
+
 // FileMap is not block Offset address key is file offset
 type FileMap map[uint64]DirectoryEntry2
 
@@ -155,12 +163,6 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 		gds:    gds,
 		pos:    pos,
 	}
-
-	extentMap := map[int64]*Extent{}
-	dataMap := map[int64]DataType{}
-	fileMap := FileMap{}
-	inodeFileMap := map[int64]uint64{}
-	inodes := []Inode{}
 
 	for _, gd := range gds {
 		dataMap[gd.GetBlockBitmapLoc(sb.FeatureInCompat64bit())] = BlockBitmapFlag
