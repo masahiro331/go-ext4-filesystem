@@ -158,6 +158,9 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 
 	extentMap := map[int64]*Extent{}
 	dataMap := map[int64]DataType{}
+	fileMap := FileMap{}
+	inodeFileMap := map[int64]uint64{}
+	inodes := []Inode{}
 
 	for _, gd := range gds {
 		dataMap[gd.GetBlockBitmapLoc(sb.FeatureInCompat64bit())] = BlockBitmapFlag
@@ -165,9 +168,6 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 		dataMap[gd.GetInodeTableLoc(sb.FeatureInCompat64bit())] = InodeTableFlag
 	}
 
-	fileMap := FileMap{}
-	inodeFileMap := map[int64]uint64{}
-	inodes := []Inode{}
 	for {
 		// debug
 		t, ok := dataMap[int64(pos)]
