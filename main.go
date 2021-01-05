@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -13,8 +14,23 @@ func main() {
 		log.Fatal(err)
 	}
 
-	_, err = ext4.NewReader(f)
+	reader, err := ext4.NewReader(f)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	buf := make([]byte, 1024)
+	for {
+		name, err := reader.Next()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if name == "os-release" {
+			_, err := reader.Read(buf)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println(string(buf))
+		}
 	}
 }
