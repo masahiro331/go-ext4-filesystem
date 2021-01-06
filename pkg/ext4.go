@@ -178,6 +178,26 @@ func (ext4 *Ext4Reader) Read(p []byte) (int, error) {
 	return ext4.buffer.Read(p)
 }
 
+// ExtendReader is vmdk file reader
+func (ext4 *Ext4Reader) ExtendReader(p []byte) (int, error) {
+	buf := make([]byte, BlockSize)
+	inputBuffer := bytes.NewBuffer([]byte{})
+
+	magnification := len(p) / int(ext4.sb.GetBlockSize())
+	for i := 0; i < magnification; i++ {
+		_, err := ext4.r.Read(buf)
+		if err != nil {
+			return 0, errors.Errorf("failed to extend read: %+v", err)
+		}
+		_, err = inputBuffer.Write(buf)
+		if err != nil {
+			return 0, errors.Errorf("failed to write buffer: %+v", err)
+		}
+	}
+
+	return inputBuffer.Read(p)
+}
+
 // Next is return next read filename
 func (ext4 *Ext4Reader) Next() (string, error) {
 	buf := make([]byte, ext4.sb.GetBlockSize())
@@ -346,7 +366,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				}
 
 				if (dirEntry.Inode-1)/ext4.sb.InodePerGroup > uint32(len(ext4.gds)) {
-					panic("inode address greater than gds length")
+					return "", errors.New("inode address greater than gds length")
 				}
 
 				gd := ext4.gds[(dirEntry.Inode-1)/ext4.sb.InodePerGroup]
