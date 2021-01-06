@@ -250,44 +250,43 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 						return "", errors.Errorf("failed to read inode: %+v", err)
 					}
 
-					if inode.Mode != 0 {
-						if inode.UsesExtents() {
-							//log.Println("Finding", num)
-							r := io.Reader(bytes.NewReader(inode.BlockOrExtents[:]))
+					if inode.Mode == 0 {
+						continue
+					}
+					if !inode.UsesExtents() {
+						continue
+					}
 
-							extentHeader := &ExtentHeader{}
-							err := binary.Read(r, binary.LittleEndian, extentHeader)
-							if err != nil {
-								return "", errors.Errorf("failed to read inode block: %+v", err)
-							}
+					r := io.Reader(bytes.NewReader(inode.BlockOrExtents[:]))
+					extentHeader := &ExtentHeader{}
+					err = binary.Read(r, binary.LittleEndian, extentHeader)
+					if err != nil {
+						return "", errors.Errorf("failed to read inode block: %+v", err)
+					}
 
-							// if depth == 0, this node is Leaf
-							if extentHeader.Depth == 0 {
-								for entry := uint16(0); entry < extentHeader.Entries; entry++ {
-									extent := &Extent{}
-									err := binary.Read(r, binary.LittleEndian, extent)
-									if err != nil {
-										return "", errors.Errorf("failed to read leaf node extent: %+v", err)
-									}
-
-									if inode.Mode&DirectoryFlag != 0 {
-										dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DirEntryFlag
-									} else if inode.Mode&FileFlag != 0 {
-										dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = FileEntryFlag
-										inodeFileMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = uint64(ext4.pos-1)*uint64(ext4.sb.GetBlockSize()) + uint64(j*int(ext4.sb.InodeSize))
-										inodeMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = inode
-									} else {
-										dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DataFlag
-									}
-
-									extentMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = extent
-								}
-							}
-							// else {
-							// 	// TODO: not support
-							// }
-						} else {
+					if extentHeader.Depth != 0 {
+						// if depth == 0 is Leaf Node
+						// if depth > 0 is internal extent
+						// internal extent is not support
+						continue
+					}
+					for entry := uint16(0); entry < extentHeader.Entries; entry++ {
+						extent := &Extent{}
+						err := binary.Read(r, binary.LittleEndian, extent)
+						if err != nil {
+							return "", errors.Errorf("failed to read leaf node extent: %+v", err)
 						}
+
+						if inode.Mode&DirectoryFlag != 0 {
+							dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DirEntryFlag
+						} else if inode.Mode&FileFlag != 0 {
+							dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = FileEntryFlag
+							inodeFileMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = uint64(ext4.pos-1)*uint64(ext4.sb.GetBlockSize()) + uint64(j*int(ext4.sb.InodeSize))
+							inodeMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = inode
+						} else {
+							dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DataFlag
+						}
+						extentMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = extent
 					}
 				}
 			}
