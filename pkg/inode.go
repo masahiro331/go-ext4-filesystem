@@ -1,14 +1,6 @@
 package ext4
 
-type MoveExtent struct {
-	Reserved    uint32 `struc:"uint32,little"`
-	Donor_fd    uint32 `struc:"uint32,little"`
-	Orig_start  uint64 `struc:"uint64,little"`
-	Donor_start uint64 `struc:"uint64,little"`
-	Len         uint64 `struc:"uint64,little"`
-	Moved_len   uint64 `struc:"uint64,little"`
-}
-
+// ExtentHeader is ...
 type ExtentHeader struct {
 	Magic      uint16 `struc:"uint16,little"`
 	Entries    uint16 `struc:"uint16,little"`
@@ -17,13 +9,7 @@ type ExtentHeader struct {
 	Generation uint32 `struc:"uint32,little"`
 }
 
-type ExtentInternal struct {
-	Block     uint32 `struc:"uint32,little"`
-	Leaf_low  uint32 `struc:"uint32,little"`
-	Leaf_high uint16 `struc:"uint16,little"`
-	Unused    uint16 `struc:"uint16,little"`
-}
-
+// Extent is extent tree leaf nodes
 type Extent struct {
 	Block   uint32 `struc:"uint32,little"`
 	Len     uint16 `struc:"uint16,little"`
@@ -31,6 +17,7 @@ type Extent struct {
 	StartLo uint32 `struc:"uint32,little"`
 }
 
+// DirectoryEntry2 is more or less a flat file that maps an arbitrary byte string
 type DirectoryEntry2 struct {
 	Inode   uint32 `struc:"uint32,little"`
 	RecLen  uint16 `struc:"uint16,little"`
@@ -39,61 +26,86 @@ type DirectoryEntry2 struct {
 	Name    string `struc:"[]byte"`
 }
 
-type DirectoryEntryCsum struct {
-	FakeInodeZero uint32 `struc:"uint32,little"`
-	Rec_len       uint16 `struc:"uint16,little"`
-	FakeName_len  uint8  `struc:"uint8"`
-	FakeFileType  uint8  `struc:"uint8"`
-	Checksum      uint32 `struc:"uint32,little"`
-}
-
+// Inode is index-node
 type Inode struct {
 	Mode           uint16   `struc:"uint16,little"`
-	Uid            uint16   `struc:"uint16,little"`
-	Size_lo        uint32   `struc:"uint32,little"`
+	UID            uint16   `struc:"uint16,little"`
+	SizeLo         uint32   `struc:"uint32,little"`
 	Atime          uint32   `struc:"uint32,little"`
 	Ctime          uint32   `struc:"uint32,little"`
 	Mtime          uint32   `struc:"uint32,little"`
 	Dtime          uint32   `struc:"uint32,little"`
-	Gid            uint16   `struc:"uint16,little"`
-	Links_count    uint16   `struc:"uint16,little"`
-	Blocks_lo      uint32   `struc:"uint32,little"`
+	GID            uint16   `struc:"uint16,little"`
+	LinksCount     uint16   `struc:"uint16,little"`
+	BlocksLo       uint32   `struc:"uint32,little"`
 	Flags          uint32   `struc:"uint32,little"`
 	Osd1           uint32   `struc:"uint32,little"`
 	BlockOrExtents [60]byte `struc:"[60]byte,little"`
 	Generation     uint32   `struc:"uint32,little"`
-	File_acl_lo    uint32   `struc:"uint32,little"`
-	Size_high      uint32   `struc:"uint32,little"`
-	Obso_faddr     uint32   `struc:"uint32,little"`
+	FileACLLo      uint32   `struc:"uint32,little"`
+	SizeHigh       uint32   `struc:"uint32,little"`
+	ObsoFaddr      uint32   `struc:"uint32,little"`
 	// OSD2 - linux only starts
-	Blocks_high   uint16 `struc:"uint16,little"`
-	File_acl_high uint16 `struc:"uint16,little"`
-	Uid_high      uint16 `struc:"uint16,little"`
-	Gid_high      uint16 `struc:"uint16,little"`
-	Checksum_low  uint16 `struc:"uint16,little"`
-	Unused        uint16 `struc:"uint16,little"`
+	BlocksHigh  uint16 `struc:"uint16,little"`
+	FileACLHigh uint16 `struc:"uint16,little"`
+	UIDHigh     uint16 `struc:"uint16,little"`
+	GIDHigh     uint16 `struc:"uint16,little"`
+	ChecksumLow uint16 `struc:"uint16,little"`
+	Unused      uint16 `struc:"uint16,little"`
 	// OSD2 - linux only ends
-	Extra_isize  uint16 `struc:"uint16,little"`
-	Checksum_hi  uint16 `struc:"uint16,little"`
-	Ctime_extra  uint32 `struc:"uint32,little"`
-	Mtime_extra  uint32 `struc:"uint32,little"`
-	Atime_extra  uint32 `struc:"uint32,little"`
-	Crtime       uint32 `struc:"uint32,little"`
-	Crtime_extra uint32 `struc:"uint32,little"`
-	Version_hi   uint32 `struc:"uint32,little"`
-	Projid       uint32 `struc:"uint32,little"`
+	ExtraIsize  uint16 `struc:"uint16,little"`
+	ChecksumHi  uint16 `struc:"uint16,little"`
+	CtimeExtra  uint32 `struc:"uint32,little"`
+	MtimeExtra  uint32 `struc:"uint32,little"`
+	AtimeExtra  uint32 `struc:"uint32,little"`
+	Crtime      uint32 `struc:"uint32,little"`
+	CrtimeExtra uint32 `struc:"uint32,little"`
+	VersionHi   uint32 `struc:"uint32,little"`
+	Projid      uint32 `struc:"uint32,little"`
 	// padding
 	Reserved [96]uint8 `struc:"[96]uint32,little"`
 }
 
+// UsesExtents is ...
 func (inode *Inode) UsesExtents() bool {
 	return (inode.Flags & EXTENTS_FL) != 0
 }
 
+// UsesDirectoryHashTree is not support
 func (inode *Inode) UsesDirectoryHashTree() bool {
 	return (inode.Flags & INDEX_FL) != 0
 }
 
+// GetSize is get inode file size
 func (inode *Inode) GetSize() int64 {
-	return (int64(inode.Size_high) << 32) | int64(inode.Size_lo)
+	return (int64(inode.SizeHigh) << 32) | int64(inode.SizeLo)
+}
+
+// Not use struct ..
+
+// ExtentInternal is not use
+type ExtentInternal struct {
+	Block    uint32 `struc:"uint32,little"`
+	LeafLow  uint32 `struc:"uint32,little"`
+	LeafHigh uint16 `struc:"uint16,little"`
+	Unused   uint16 `struc:"uint16,little"`
+}
+
+// DirectoryEntryCsum is not use
+type DirectoryEntryCsum struct {
+	FakeInodeZero uint32 `struc:"uint32,little"`
+	RecLen        uint16 `struc:"uint16,little"`
+	FakeNameLen   uint8  `struc:"uint8"`
+	FakeFileType  uint8  `struc:"uint8"`
+	Checksum      uint32 `struc:"uint32,little"`
+}
+
+// MoveExtent is not use
+type MoveExtent struct {
+	Reserved   uint32 `struc:"uint32,little"`
+	DonorFd    uint32 `struc:"uint32,little"`
+	OrigStart  uint64 `struc:"uint64,little"`
+	DonorStart uint64 `struc:"uint64,little"`
+	Len        uint64 `struc:"uint64,little"`
+	MovedLen   uint64 `struc:"uint64,little"`
 }

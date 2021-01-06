@@ -27,7 +27,8 @@ const (
 	DirectoryFlag = 0x4000
 	FileFlag      = 0x8000
 	InlineFlag    = 0x10000000
-
+)
+const (
 	BlockBitmapFlag DataType = iota
 	InodeBitmapFlag
 	InodeTableFlag
@@ -111,7 +112,6 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 
 	rawbuffer := bytes.NewBuffer([]byte{})
 	buf := make([]byte, BlockSize)
-	// buf := make([]byte, sb.GetBlockSize())
 	for i := uint32(0); i < sb.GetGroupDescriptorCount(); i++ {
 		_, err := r.Read(buf)
 		if err != nil {
@@ -179,6 +179,7 @@ func (ext4 *Ext4Reader) Read(p []byte) (int, error) {
 
 // ExtendRead is vmdk file reader
 func (ext4 *Ext4Reader) ExtendRead(p []byte) (int, error) {
+
 	buf := make([]byte, BlockSize)
 	inputBuffer := bytes.NewBuffer([]byte{})
 
@@ -311,6 +312,8 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 			}
 
 			blockCount := int64(math.Ceil(float64(inode.GetSize()) / float64(ext4.sb.GetBlockSize())))
+
+			// ReDefinition buf
 			buf := make([]byte, int(ext4.sb.GetBlockSize()*blockCount))
 			_, err := ext4.ExtendRead(buf)
 			if err != nil {
