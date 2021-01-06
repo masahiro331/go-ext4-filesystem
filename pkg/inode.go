@@ -93,3 +93,7 @@ func (inode *Inode) UsesExtents() bool {
 func (inode *Inode) UsesDirectoryHashTree() bool {
 	return (inode.Flags & INDEX_FL) != 0
 }
+
+func (inode *Inode) GetSize() int64 {
+	return (int64(inode.Size_high) << 32) | int64(inode.Size_lo)
+}

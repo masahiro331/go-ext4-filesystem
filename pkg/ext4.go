@@ -3,12 +3,11 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
+	"math"
 
 	"github.com/lunixbochs/struc"
 	"github.com/pkg/errors"
-	"golang.org/x/xerrors"
 )
 
 // Reader is filesystem reader interface
@@ -43,7 +42,7 @@ var (
 	dataMap      = map[int64]DataType{}
 	fileMap      = FileMap{}
 	inodeFileMap = map[int64]uint64{}
-	inodes       = []Inode{}
+	inodeMap     = map[int64]Inode{}
 )
 
 // FileMap is not block Offset address key is file offset
@@ -90,7 +89,7 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 		return nil, err
 	}
 	if sb.Magic != 0xEF53 {
-		return nil, xerrors.New("unsupported block")
+		return nil, errors.New("unsupported block")
 	}
 
 	// Read padding block
@@ -107,7 +106,7 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 	numBlockGroups := (sb.GetBlockCount() + int64(sb.BlockPerGroup) - 1) / int64(sb.BlockPerGroup)
 	numBlockGroups2 := (sb.InodeCount + sb.InodePerGroup - 1) / sb.InodePerGroup
 	if numBlockGroups != int64(numBlockGroups2) {
-		return nil, fmt.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)
+		return nil, errors.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)
 	}
 
 	rawbuffer := bytes.NewBuffer([]byte{})
@@ -178,12 +177,12 @@ func (ext4 *Ext4Reader) Read(p []byte) (int, error) {
 	return ext4.buffer.Read(p)
 }
 
-// ExtendReader is vmdk file reader
-func (ext4 *Ext4Reader) ExtendReader(p []byte) (int, error) {
+// ExtendRead is vmdk file reader
+func (ext4 *Ext4Reader) ExtendRead(p []byte) (int, error) {
 	buf := make([]byte, BlockSize)
 	inputBuffer := bytes.NewBuffer([]byte{})
 
-	magnification := len(p) / int(ext4.sb.GetBlockSize())
+	magnification := len(p) / BlockSize
 	for i := 0; i < magnification; i++ {
 		_, err := ext4.r.Read(buf)
 		if err != nil {
@@ -194,7 +193,6 @@ func (ext4 *Ext4Reader) ExtendReader(p []byte) (int, error) {
 			return 0, errors.Errorf("failed to write buffer: %+v", err)
 		}
 	}
-
 	return inputBuffer.Read(p)
 }
 
@@ -211,7 +209,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 
 		switch t {
 		case BlockBitmapFlag:
-			_, err := ext4.r.Read(buf)
+			_, err := ext4.ExtendRead(buf)
 			if err != nil {
 				if err == io.EOF {
 					goto BREAK
@@ -221,7 +219,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 			ext4.pos++
 
 		case InodeBitmapFlag:
-			_, err := ext4.r.Read(buf)
+			_, err := ext4.ExtendRead(buf)
 			if err != nil {
 				if err == io.EOF {
 					goto BREAK
@@ -233,7 +231,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 		case InodeTableFlag:
 			inodeTableBlockCount := ext4.sb.InodePerGroup * uint32(ext4.sb.InodeSize) / uint32(ext4.sb.GetBlockSize())
 			for i := uint32(0); i < inodeTableBlockCount; i++ {
-				_, err := ext4.r.Read(buf)
+				_, err := ext4.ExtendRead(buf)
 				if err != nil {
 					if err == io.EOF {
 						goto BREAK
@@ -276,6 +274,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 									} else if inode.Mode&FileFlag != 0 {
 										dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = FileEntryFlag
 										inodeFileMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = uint64(ext4.pos-1)*uint64(ext4.sb.GetBlockSize()) + uint64(j*int(ext4.sb.InodeSize))
+										inodeMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = inode
 									} else {
 										dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DataFlag
 									}
@@ -289,12 +288,11 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 						} else {
 						}
 					}
-					inodes = append(inodes, inode)
 				}
 			}
 
 		case DataFlag:
-			_, err := ext4.r.Read(buf)
+			_, err := ext4.ExtendRead(buf)
 			if err != nil {
 				if err == io.EOF {
 					goto BREAK
@@ -303,26 +301,27 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 			}
 			ext4.pos++
 		case FileEntryFlag:
-			extent, ok := extentMap[int64(ext4.pos)]
-			if !ok {
-				return "", errors.New("extent not found")
-			}
 			offset, ok := inodeFileMap[int64(ext4.pos)]
+			if !ok {
+				return "", errors.New("inode offset not found")
+			}
+			inode, ok := inodeMap[int64(ext4.pos)]
 			if !ok {
 				return "", errors.New("inode not found")
 			}
-			buf := make([]byte, int(ext4.sb.GetBlockSize())*int(extent.Len))
-			_, err := ext4.r.Read(buf)
+
+			blockCount := int64(math.Ceil(float64(inode.GetSize()) / float64(ext4.sb.GetBlockSize())))
+			buf := make([]byte, int(ext4.sb.GetBlockSize()*blockCount))
+			_, err := ext4.ExtendRead(buf)
 			if err != nil {
 				if err == io.EOF {
 					goto BREAK
 				}
 				return "", err
 			}
-			ext4.pos += uint32(extent.Len)
+			ext4.pos += uint32(blockCount)
 
-			//
-			ext4.buffer = bytes.NewBuffer(buf)
+			ext4.buffer = bytes.NewBuffer(buf[:inode.GetSize()])
 
 			file, ok := fileMap[offset]
 			if !ok {
@@ -339,7 +338,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 
 			buf := make([]byte, int(ext4.sb.GetBlockSize())*int(extent.Len))
 
-			_, err := ext4.r.Read(buf)
+			_, err := ext4.ExtendRead(buf)
 			if err != nil {
 				if err == io.EOF {
 					goto BREAK
@@ -380,7 +379,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 			}
 			ext4.pos += uint32(extent.Len)
 		case Unknown: // default
-			_, err := ext4.r.Read(buf)
+			_, err := ext4.ExtendRead(buf)
 			if err != nil {
 				if err == io.EOF {
 					goto BREAK
