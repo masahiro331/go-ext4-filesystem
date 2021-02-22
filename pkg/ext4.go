@@ -38,14 +38,6 @@ const (
 	Unknown
 )
 
-var (
-	extentMap    = map[int64]*Extent{}
-	dataMap      = map[int64]DataType{}
-	fileMap      = FileMap{}
-	inodeFileMap = map[int64]uint64{}
-	inodeMap     = map[int64]Inode{}
-)
-
 // FileMap is not block Offset address key is file offset
 type FileMap map[uint64]DirectoryEntry2
 
@@ -66,6 +58,12 @@ func NewReader(r io.Reader) (Reader, error) {
 // Ext4Reader is ext4 filesystem reader
 type Ext4Reader struct {
 	r io.Reader
+
+	extentMap    map[int64]*Extent
+	dataMap      map[int64]DataType
+	fileMap      FileMap
+	inodeFileMap map[int64]uint64
+	inodeMap     map[int64]Inode
 
 	buffer *bytes.Buffer
 	sb     Superblock
@@ -121,6 +119,7 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 	}
 
 	// Group Descriptors
+	dataMap := map[int64]DataType{}
 	var gds []GroupDescriptor
 	for i := uint32(0); i < sb.GetGroupDescriptorTableCount(); i++ {
 		var size uint32
@@ -161,6 +160,12 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 	ext4Reader := &Ext4Reader{
 		// input reader
 		r: r,
+
+		dataMap:      dataMap,
+		extentMap:    map[int64]*Extent{},
+		fileMap:      FileMap{},
+		inodeFileMap: map[int64]uint64{},
+		inodeMap:     map[int64]Inode{},
 
 		// ext4 Reader buffer
 		buffer: bytes.NewBuffer([]byte{}),
@@ -203,7 +208,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 
 	for {
 		// debug
-		t, ok := dataMap[int64(ext4.pos)]
+		t, ok := ext4.dataMap[int64(ext4.pos)]
 		if !ok {
 			t = Unknown
 		}
@@ -278,15 +283,15 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 						}
 
 						if inode.Mode&DirectoryFlag != 0 {
-							dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DirEntryFlag
+							ext4.dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DirEntryFlag
 						} else if inode.Mode&FileFlag != 0 {
-							dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = FileEntryFlag
-							inodeFileMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = uint64(ext4.pos-1)*uint64(ext4.sb.GetBlockSize()) + uint64(j*int(ext4.sb.InodeSize))
-							inodeMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = inode
+							ext4.dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = FileEntryFlag
+							ext4.inodeFileMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = uint64(ext4.pos-1)*uint64(ext4.sb.GetBlockSize()) + uint64(j*int(ext4.sb.InodeSize))
+							ext4.inodeMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = inode
 						} else {
-							dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DataFlag
+							ext4.dataMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = DataFlag
 						}
-						extentMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = extent
+						ext4.extentMap[int64(extent.StartHi<<32)+int64(extent.StartLo)] = extent
 					}
 				}
 			}
@@ -301,11 +306,11 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 			}
 			ext4.pos++
 		case FileEntryFlag:
-			offset, ok := inodeFileMap[int64(ext4.pos)]
+			offset, ok := ext4.inodeFileMap[int64(ext4.pos)]
 			if !ok {
 				return "", errors.New("inode offset not found")
 			}
-			inode, ok := inodeMap[int64(ext4.pos)]
+			inode, ok := ext4.inodeMap[int64(ext4.pos)]
 			if !ok {
 				return "", errors.New("inode not found")
 			}
@@ -325,7 +330,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 
 			ext4.buffer = bytes.NewBuffer(buf[:inode.GetSize()])
 
-			file, ok := fileMap[offset]
+			file, ok := ext4.fileMap[offset]
 			if !ok {
 				// TODO: why not found inode files...
 				break
@@ -333,7 +338,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 			return file.Name, nil
 
 		case DirEntryFlag:
-			extent, ok := extentMap[int64(ext4.pos)]
+			extent, ok := ext4.extentMap[int64(ext4.pos)]
 			if !ok {
 				return "", errors.New("extent not found")
 			}
@@ -374,7 +379,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				index := int64((dirEntry.Inode - 1) % ext4.sb.InodePerGroup)
 				pos := gd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
 
-				fileMap[uint64(pos)] = dirEntry
+				ext4.fileMap[uint64(pos)] = dirEntry
 
 				// read padding
 				directoryReader.Read(make([]byte, padding))
