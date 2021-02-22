@@ -108,7 +108,7 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 		return nil, errors.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)
 	}
 
-	rawbuffer := bytes.NewBuffer([]byte{})
+	rawbuffer := bytes.Buffer{}
 	buf := make([]byte, BlockSize)
 	for i := uint32(0); i < sb.GetGroupDescriptorCount(); i++ {
 		_, err := r.Read(buf)
@@ -168,7 +168,7 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 		inodeMap:     map[int64]Inode{},
 
 		// ext4 Reader buffer
-		buffer: bytes.NewBuffer([]byte{}),
+		buffer: &bytes.Buffer{},
 		sb:     sb,
 		gds:    gds,
 		pos:    pos,
@@ -186,7 +186,7 @@ func (ext4 *Ext4Reader) Read(p []byte) (int, error) {
 func (ext4 *Ext4Reader) ExtendRead(p []byte) (int, error) {
 
 	buf := make([]byte, BlockSize)
-	inputBuffer := bytes.NewBuffer([]byte{})
+	inputBuffer := bytes.Buffer{}
 
 	magnification := len(p) / BlockSize
 	for i := 0; i < magnification; i++ {
