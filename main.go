@@ -22,12 +22,12 @@ func main() {
 
 	buf := make([]byte, 1024)
 	for {
-		name, err := reader.Next()
+		file, err := reader.Next()
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		if strings.Contains(name, "etc/os-release") {
+		if strings.Contains(file.Name(), "etc/os-release") {
 			_, err := reader.Read(buf)
 			if err != nil {
 				log.Fatal(err)
