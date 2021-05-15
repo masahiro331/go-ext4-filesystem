@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	ext4 "github.com/masahiro331/go-ext4-filesystem/pkg"
 )
@@ -25,7 +26,8 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if name == "os-release" {
+
+		if strings.Contains(name, "etc/os-release") {
 			_, err := reader.Read(buf)
 			if err != nil {
 				log.Fatal(err)
