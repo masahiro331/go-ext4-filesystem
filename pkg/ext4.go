@@ -197,6 +197,9 @@ func (ext4 *Ext4Reader) ExtendRead(p []byte) (int, error) {
 	for i := 0; i < magnification; i++ {
 		_, err := ext4.r.Read(buf)
 		if err != nil {
+			if err == io.EOF {
+				return 0, io.EOF
+			}
 			return 0, errors.Errorf("failed to extend read: %+v", err)
 		}
 		_, err = inputBuffer.Write(buf)
