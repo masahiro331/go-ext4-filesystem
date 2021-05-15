@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"path/filepath"
 
 	"github.com/lunixbochs/struc"
 	"github.com/pkg/errors"
@@ -29,6 +30,8 @@ const (
 	InlineFlag    = 0x10000000
 )
 const (
+	rootInodeNumber = 2
+
 	BlockBitmapFlag DataType = iota
 	InodeBitmapFlag
 	InodeTableFlag
@@ -59,11 +62,12 @@ func NewReader(r io.Reader) (Reader, error) {
 type Ext4Reader struct {
 	r io.Reader
 
-	extentMap    map[int64]*Extent
-	dataMap      map[int64]DataType
-	fileMap      FileMap
-	inodeFileMap map[int64]uint64
-	inodeMap     map[int64]Inode
+	extentMap        map[int64]*Extent
+	dataMap          map[int64]DataType
+	fileMap          FileMap
+	inodeFileMap     map[int64]uint64
+	inodeMap         map[int64]Inode
+	inodeFileNameMap map[uint32]string
 
 	buffer *bytes.Buffer
 	sb     Superblock
@@ -161,11 +165,12 @@ func NewExt4Reader(r io.Reader) (Reader, error) {
 		// input reader
 		r: r,
 
-		dataMap:      dataMap,
-		extentMap:    map[int64]*Extent{},
-		fileMap:      FileMap{},
-		inodeFileMap: map[int64]uint64{},
-		inodeMap:     map[int64]Inode{},
+		dataMap:          dataMap,
+		extentMap:        map[int64]*Extent{},
+		fileMap:          FileMap{},
+		inodeFileMap:     map[int64]uint64{},
+		inodeMap:         map[int64]Inode{},
+		inodeFileNameMap: map[uint32]string{rootInodeNumber: ""},
 
 		// ext4 Reader buffer
 		buffer: &bytes.Buffer{},
@@ -355,6 +360,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 
 			directoryReader := bytes.NewReader(buf)
 			dirEntry := DirectoryEntry2{}
+			var currentInode uint32
 			for {
 				err = struc.Unpack(directoryReader, &dirEntry)
 				if err != nil {
@@ -378,6 +384,26 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				gd := ext4.gds[(dirEntry.Inode-1)/ext4.sb.InodePerGroup]
 				index := int64((dirEntry.Inode - 1) % ext4.sb.InodePerGroup)
 				pos := gd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
+
+				if dirEntry.Name == "." {
+					currentInode = dirEntry.Inode
+				} else if dirEntry.Name == ".." {
+					// parentInode = dirEntry.Inode
+				} else {
+					absPath := filepath.Join(ext4.inodeFileNameMap[currentInode], dirEntry.Name)
+					ext4.inodeFileNameMap[dirEntry.Inode] = absPath
+					dirEntry.Name = absPath
+				}
+
+				// TODO: ???
+				// // File
+				// if 0x1&dirEntry.Flags != 0 {
+
+				// }
+				// // Directory
+				// if 0x2&dirEntry.Flags != 0 {
+
+				// }
 
 				ext4.fileMap[uint64(pos)] = dirEntry
 
