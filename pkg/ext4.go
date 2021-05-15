@@ -14,7 +14,7 @@ import (
 // Reader is filesystem reader interface
 type Reader interface {
 	io.ReadCloser
-	Next() (string, error)
+	Next() (*File, error)
 }
 
 // DataType is binary type
@@ -208,7 +208,7 @@ func (ext4 *Ext4Reader) ExtendRead(p []byte) (int, error) {
 }
 
 // Next is return next read filename
-func (ext4 *Ext4Reader) Next() (string, error) {
+func (ext4 *Ext4Reader) Next() (*File, error) {
 	buf := make([]byte, ext4.sb.GetBlockSize())
 
 	for {
@@ -225,7 +225,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				if err == io.EOF {
 					goto BREAK
 				}
-				return "", err
+				return nil, err
 			}
 			ext4.pos++
 
@@ -235,7 +235,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				if err == io.EOF {
 					goto BREAK
 				}
-				return "", err
+				return nil, err
 			}
 			ext4.pos++
 
@@ -247,7 +247,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 					if err == io.EOF {
 						goto BREAK
 					}
-					return "", err
+					return nil, err
 				}
 				blockReader := bytes.NewReader(buf)
 				ext4.pos++
@@ -257,7 +257,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 
 					err := binary.Read(blockReader, binary.LittleEndian, &inode)
 					if err != nil {
-						return "", errors.Errorf("failed to read inode: %+v", err)
+						return nil, errors.Errorf("failed to read inode: %+v", err)
 					}
 
 					if inode.Mode == 0 {
@@ -271,7 +271,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 					extentHeader := &ExtentHeader{}
 					err = binary.Read(r, binary.LittleEndian, extentHeader)
 					if err != nil {
-						return "", errors.Errorf("failed to read inode block: %+v", err)
+						return nil, errors.Errorf("failed to read inode block: %+v", err)
 					}
 
 					if extentHeader.Depth != 0 {
@@ -284,7 +284,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 						extent := &Extent{}
 						err := binary.Read(r, binary.LittleEndian, extent)
 						if err != nil {
-							return "", errors.Errorf("failed to read leaf node extent: %+v", err)
+							return nil, errors.Errorf("failed to read leaf node extent: %+v", err)
 						}
 
 						if inode.Mode&DirectoryFlag != 0 {
@@ -307,17 +307,17 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				if err == io.EOF {
 					goto BREAK
 				}
-				return "", err
+				return nil, err
 			}
 			ext4.pos++
 		case FileEntryFlag:
 			offset, ok := ext4.inodeFileMap[int64(ext4.pos)]
 			if !ok {
-				return "", errors.New("inode offset not found")
+				return nil, errors.New("inode offset not found")
 			}
 			inode, ok := ext4.inodeMap[int64(ext4.pos)]
 			if !ok {
-				return "", errors.New("inode not found")
+				return nil, errors.New("inode not found")
 			}
 
 			blockCount := int64(math.Ceil(float64(inode.GetSize()) / float64(ext4.sb.GetBlockSize())))
@@ -329,7 +329,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				if err == io.EOF {
 					goto BREAK
 				}
-				return "", err
+				return nil, err
 			}
 			ext4.pos += uint32(blockCount)
 
@@ -340,12 +340,18 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				// TODO: why not found inode files...
 				break
 			}
-			return file.Name, nil
+			return &File{
+				filePath: file.Name,
+				mTime:    inode.Mtime,
+				mode:     inode.Mode,
+				size:     inode.GetSize(),
+				isDir:    false,
+			}, nil
 
 		case DirEntryFlag:
 			extent, ok := ext4.extentMap[int64(ext4.pos)]
 			if !ok {
-				return "", errors.New("extent not found")
+				return nil, errors.New("extent not found")
 			}
 
 			buf := make([]byte, int(ext4.sb.GetBlockSize())*int(extent.Len))
@@ -355,7 +361,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				if err == io.EOF {
 					goto BREAK
 				}
-				return "", err
+				return nil, err
 			}
 
 			directoryReader := bytes.NewReader(buf)
@@ -367,7 +373,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 					if err == io.EOF {
 						break
 					}
-					return "", errors.Errorf("failed to parse directory entry: %+v", err)
+					return nil, errors.Errorf("failed to parse directory entry: %+v", err)
 				}
 				size := dirEntry.NameLen + 8
 				padding := dirEntry.RecLen - uint16(size)
@@ -378,7 +384,7 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				}
 
 				if (dirEntry.Inode-1)/ext4.sb.InodePerGroup > uint32(len(ext4.gds)) {
-					return "", errors.New("inode address greater than gds length")
+					return nil, errors.New("inode address greater than gds length")
 				}
 
 				gd := ext4.gds[(dirEntry.Inode-1)/ext4.sb.InodePerGroup]
@@ -398,11 +404,9 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				// TODO: ???
 				// // File
 				// if 0x1&dirEntry.Flags != 0 {
-
 				// }
 				// // Directory
 				// if 0x2&dirEntry.Flags != 0 {
-
 				// }
 
 				ext4.fileMap[uint64(pos)] = dirEntry
@@ -417,14 +421,14 @@ func (ext4 *Ext4Reader) Next() (string, error) {
 				if err == io.EOF {
 					goto BREAK
 				}
-				return "", err
+				return nil, err
 			}
 			ext4.pos++
 		}
 	}
 BREAK:
 
-	return "", io.EOF
+	return nil, io.EOF
 }
 
 // Close is close filesystem reader
