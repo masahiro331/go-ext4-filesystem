@@ -14,13 +14,27 @@ import (
 //	 	IsDir() bool        // abbreviation for Mode().IsDir()
 //	 	Sys() interface{}   // underlying data source (can return nil)
 // }
+var _ fs.File = File{}
+var _ fs.FileInfo = FileInfo{}
 
+// File is implemented io/fs File interface
 type File struct {
 	filePath string
 	mTime    uint32
 	mode     uint16
 	size     int64
 	isDir    bool
+
+	fs *FileSystem
+	FileInfo
+}
+
+// FileInfo is implemented io/fs FileInfo interface
+type FileInfo struct {
+	name  string
+	inode *Inode
+
+	mode fs.FileMode
 }
 
 func (f File) Name() string {
@@ -55,4 +69,48 @@ func (f File) IsDir() bool {
 
 func (f File) Sys() interface{} {
 	return nil
+}
+
+func (fi FileInfo) Name() string {
+	return fi.name
+}
+
+func (fi FileInfo) Size() int64 {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (fi FileInfo) Mode() fs.FileMode {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (fi FileInfo) ModTime() time.Time {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (fi FileInfo) IsDir() bool {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (fi FileInfo) Sys() interface{} {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (f File) Stat() (fs.FileInfo, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (f File) Read(bytes []byte) (int, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (f File) Close() error {
+	//TODO implement me
+	panic("implement me")
 }

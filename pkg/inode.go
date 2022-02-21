@@ -81,8 +81,6 @@ func (inode *Inode) GetSize() int64 {
 	return (int64(inode.SizeHigh) << 32) | int64(inode.SizeLo)
 }
 
-// Not use struct ..
-
 // ExtentInternal is not use
 type ExtentInternal struct {
 	Block    uint32 `struc:"uint32,little"`

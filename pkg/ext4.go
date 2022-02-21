@@ -3,6 +3,7 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"golang.org/x/xerrors"
 	"io"
 	"math"
 	"path/filepath"
@@ -22,13 +23,16 @@ type DataType uint
 
 // BlockSize is filesystem block size
 const (
+	SectorSize       = 0x200
 	BlockSize        = 0x400
+	SuperBlockSize   = 0x400
 	GroupZeroPadding = 0x400
 
 	DirectoryFlag = 0x4000
 	FileFlag      = 0x8000
 	InlineFlag    = 0x10000000
 )
+
 const (
 	rootInodeNumber = 2
 
@@ -41,6 +45,110 @@ const (
 	Unknown
 )
 
+func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, error) {
+	_, err := r.Seek(sb.GetBlockSize(), 0)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to seek Group Descriptor offset: %w", err)
+	}
+
+	GroupDescriptorSize := int(sb.GetGroupDescriptorTableCount()) * 32
+	if sb.FeatureInCompat64bit() {
+		GroupDescriptorSize = int(sb.GetGroupDescriptorTableCount()) * 64
+	}
+
+	count := divWithRoundUp(GroupDescriptorSize, SectorSize)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to div: %w", err)
+	}
+	buf, err := readBlock(&r, int64(count)*SectorSize)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read group descriptor: %w", err)
+	}
+	var gds []GroupDescriptor
+	for i := uint32(0); i < sb.GetGroupDescriptorTableCount(); i++ {
+		var gd GroupDescriptor
+		err = binary.Read(buf, binary.LittleEndian, &gd)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to parse group descriptor: %w", err)
+		}
+		gds = append(gds, gd)
+	}
+
+	return gds, nil
+}
+
+func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
+	bgd := ext4.gds[(inodeAddress-1)/int64(ext4.sb.InodePerGroup)]
+	index := (inodeAddress - 1) % int64(ext4.sb.InodePerGroup)
+	physicalOffset := bgd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
+
+	// offset need to 512*N offset
+	inodeOffset := physicalOffset % SectorSize
+	seekOffset := physicalOffset - (physicalOffset % SectorSize)
+	buf := make([]byte, SectorSize)
+	_, err := ext4.r.ReadAt(buf, seekOffset)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read inode: %w", err)
+	}
+	if inodeOffset != 0 && int64(len(buf)) > inodeOffset {
+		buf = buf[inodeOffset:]
+	}
+
+	inode := &Inode{}
+	if err := binary.Read(bytes.NewReader(buf), binary.LittleEndian, inode); err != nil {
+		return nil, xerrors.Errorf("failed to read binary: %w", err)
+	}
+	return inode, nil
+}
+
+func (ext4 *FileSystem) extents(inode *Inode) ([]Extent, error) {
+	extentReader := bytes.NewReader(inode.BlockOrExtents[:])
+	extentHeader := &ExtentHeader{}
+	err := binary.Read(extentReader, binary.LittleEndian, extentHeader)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to parse extent header: %w", err)
+	}
+
+	var extents []Extent
+	for entry := uint16(0); entry < extentHeader.Entries; entry++ {
+		var extent Extent
+		err := binary.Read(extentReader, binary.LittleEndian, &extent)
+		if err != nil {
+			return nil, errors.Errorf("failed to read leaf node extent: %+v", err)
+		}
+		extents = append(extents, extent)
+	}
+
+	return extents, nil
+}
+
+func (e *Extent) offset() int64 {
+	return int64(e.StartHi<<32) + int64(e.StartLo)
+}
+
+func divWithRoundUp(a int, b int) int {
+	n := a / b
+	if a%b != 0 {
+		return n + 1
+	}
+	return n
+}
+
+func readBlock(r io.Reader, size int64) (*bytes.Buffer, error) {
+	buf := bytes.NewBuffer(nil)
+	for i := int64(0); i < size/SectorSize; i++ {
+		n, err := io.CopyN(buf, r, SectorSize)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read block: %w", err)
+		}
+		if n != SectorSize {
+			return nil, xerrors.New("failed to read sector")
+		}
+	}
+	return buf, nil
+}
+
+// ===========================================================-
 // FileMap is not block Offset address key is file offset
 type FileMap map[uint64]DirectoryEntry2
 
