@@ -4,11 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/lunixbochs/struc"
-	"github.com/pkg/errors"
 	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
-	"log"
 )
 
 var (
@@ -50,7 +48,7 @@ func NewFS(r io.SectionReader, sectorSize int64) (*FileSystem, error) {
 	numBlockGroups := (sb.GetBlockCount() + int64(sb.BlockPerGroup) - 1) / int64(sb.BlockPerGroup)
 	numBlockGroups2 := (sb.InodeCount + sb.InodePerGroup - 1) / sb.InodePerGroup
 	if numBlockGroups != int64(numBlockGroups2) {
-		return nil, errors.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)
+		return nil, xerrors.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)
 	}
 
 	gds, err := sb.getGroupDescriptor(r)
@@ -70,36 +68,37 @@ func NewFS(r io.SectionReader, sectorSize int64) (*FileSystem, error) {
 func (ext4 *FileSystem) ReadDir(path string) ([]fs.DirEntry, error) {
 	const op = "read directory"
 
-	dirEntries, err := ext4.readDirEntry(path, nil)
+	// dirEntries, err := ext4.readDirEntry(path, nil)
+	// if err != nil {
+	// 	return nil, ext4.wrapError(op, path, err)
+	// }
+	// return dirEntries, nil
+
+	ino := int64(rootInodeNumber)
+	entries, err := ext4.walk(ino, nil)
 	if err != nil {
 		return nil, ext4.wrapError(op, path, err)
 	}
-	return dirEntries, nil
+	fmt.Println(len(entries))
+
+	return nil, nil
 }
 
-func (ext4 *FileSystem) readDirEntry(path string, dirEntry []fs.DirEntry) ([]fs.DirEntry, error) {
-	{
-		inode, err := ext4.getInode(4868)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to get root inode(%d): %w", ext4.sb.FirstIno, err)
-		}
-		extents, err := ext4.extents(inode)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to get extents error: %w", err)
-		}
+var DIRECTORY_MODE = uint16(16877)
 
-		fmt.Printf("%+v\n", inode)
-		fmt.Printf("%+v\n", extents)
-	}
-	return nil, nil
-
-	//
-	inode, err := ext4.getInode(rootInodeNumber)
+func (ext4 *FileSystem) walk(ino int64, entries []DirectoryEntry2) ([]DirectoryEntry2, error) {
+	inode, err := ext4.getInode(ino)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get root inode(%d): %w", ext4.sb.FirstIno, err)
 	}
+	if inode.UsesDirectoryHashTree() {
+	}
 
-	extents, err := ext4.extents(inode)
+	if inode.Mode != DIRECTORY_MODE {
+		return entries, nil
+	}
+
+	extents, err := ext4.Extents(inode)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get extents error: %w", err)
 	}
@@ -107,50 +106,47 @@ func (ext4 *FileSystem) readDirEntry(path string, dirEntry []fs.DirEntry) ([]fs.
 	for _, e := range extents {
 		_, err := ext4.r.Seek(e.offset()*ext4.sb.GetBlockSize(), 0)
 		if err != nil {
-			log.Fatal(err)
+			return nil, xerrors.Errorf("failed to seek: %w", err)
 		}
 		directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize()*int64(e.Len))
 		if err != nil {
-			log.Fatal(err)
+			return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 		}
-
-		dirEntry := DirectoryEntry2{}
 		for {
+			dirEntry := DirectoryEntry2{}
 			err = struc.Unpack(directoryReader, &dirEntry)
 			if err != nil {
 				if err == io.EOF {
 					break
 				}
-				return nil, errors.Errorf("failed to parse directory entry: %+v", err)
+				return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
 			}
-			/*
-				direEntry Size is
-				dirEntry.NameLen
-				+ binary.Size(dirEntry.Inode)
-				+ binary.Size(dirEntry.RecLen)
-				+ binary.Size(dirEntry.NameLen)
-			*/
 			align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
-			directoryReader.Read(make([]byte, align))
-
-			//  det_reserved_ft
+			_, err := directoryReader.Read(make([]byte, align))
+			if err != nil {
+				return nil, xerrors.Errorf("failed to read align: %w", err)
+			}
+			if dirEntry.Name == "." || dirEntry.Name == ".." {
+				continue
+			}
 			if dirEntry.Flags == 0xDE {
 				break
 			}
-
-			fmt.Printf("dir entry: %+v\n", dirEntry)
-			if (dirEntry.Inode-1)/ext4.sb.InodePerGroup > uint32(len(ext4.gds)) {
-				return nil, errors.New("inode address greater than gds length")
+			entries = append(entries, dirEntry)
+			entries, err = ext4.walk(int64(dirEntry.Inode), entries)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to walk: %w", err)
 			}
 		}
 	}
+	return entries, nil
+}
+
+func (ext4 *FileSystem) readDirEntry(path string, dirEntry []fs.DirEntry) ([]fs.DirEntry, error) {
 	return nil, nil
 }
 
 func (ext4 *FileSystem) ReadDirectory(inode Inode) ([]DirectoryEntry2, error) {
-	if inode.UsesDirectoryHashTree() {
-		return nil, xerrors.Errorf("hash tree inode does not support")
-	}
 	return nil, nil
 }
 

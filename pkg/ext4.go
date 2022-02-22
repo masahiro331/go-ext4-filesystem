@@ -3,9 +3,12 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"golang.org/x/xerrors"
 	"io"
+	"log"
 	"math"
+	"os"
 	"path/filepath"
 
 	"github.com/lunixbochs/struc"
@@ -101,29 +104,65 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	return inode, nil
 }
 
-func (ext4 *FileSystem) extents(inode *Inode) ([]Extent, error) {
-	extentReader := bytes.NewReader(inode.BlockOrExtents[:])
+func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
+	extentReader := bytes.NewReader(b)
 	extentHeader := &ExtentHeader{}
 	err := binary.Read(extentReader, binary.LittleEndian, extentHeader)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to parse extent header: %w", err)
 	}
 
-	var extents []Extent
-	for entry := uint16(0); entry < extentHeader.Entries; entry++ {
-		var extent Extent
-		err := binary.Read(extentReader, binary.LittleEndian, &extent)
-		if err != nil {
-			return nil, errors.Errorf("failed to read leaf node extent: %+v", err)
+	if extentHeader.Depth == 0 {
+		for entry := uint16(0); entry < extentHeader.Entries; entry++ {
+			var extent Extent
+			err := binary.Read(extentReader, binary.LittleEndian, &extent)
+			if err != nil {
+				return nil, errors.Errorf("failed to read leaf node extent: %+v", err)
+			}
+			extents = append(extents, extent)
 		}
-		extents = append(extents, extent)
+	} else {
+		for i := uint16(0); i < extentHeader.Entries; i++ {
+			var extent ExtentInternal
+			err := binary.Read(extentReader, binary.LittleEndian, &extent)
+			if err != nil {
+				return nil, errors.Errorf("failed to read internal extent: %+v", err)
+			}
+			b := make([]byte, SectorSize)
+			_, err = ext4.r.ReadAt(b, int64(extent.LeafHigh)<<32+int64(extent.LeafLow)*ext4.sb.GetBlockSize())
+			if err != nil {
+				return nil, errors.Errorf("failed to read leaf node extent: %+v", err)
+			}
+
+			extents, err = ext4.extents(b, extents)
+			if err != nil {
+				return nil, errors.Errorf("failed to get extents: %+v", err)
+			}
+		}
+	}
+	return extents, nil
+}
+
+func (ext4 *FileSystem) Extents(inode *Inode) ([]Extent, error) {
+	extents, err := ext4.extents(inode.BlockOrExtents[:], nil)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to get extents: %w", err)
 	}
 
 	return extents, nil
 }
 
+func (ext4 *FileSystem) dump() {
+	b := make([]byte, SectorSize)
+	_, err := ext4.r.Read(b)
+	if err != nil {
+		log.Fatal(err)
+	}
+	hex.Dumper(os.Stdout).Write(b)
+}
+
 func (e *Extent) offset() int64 {
-	return int64(e.StartHi<<32) + int64(e.StartLo)
+	return int64(e.StartHi)<<32 + int64(e.StartLo)
 }
 
 func divWithRoundUp(a int, b int) int {
