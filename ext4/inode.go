@@ -66,22 +66,38 @@ type Inode struct {
 	Reserved [96]uint8 `struc:"[96]uint32,little"`
 }
 
-// UsesExtents is ...
-func (inode *Inode) UsesExtents() bool {
-	return (inode.Flags & EXTENTS_FL) != 0
+func (i Inode) IsDir() bool {
+	return i.Mode&0x4000 != 0 && i.Mode&0x8000 == 0
 }
 
-// UsesDirectoryHashTree is not support
-func (inode *Inode) UsesDirectoryHashTree() bool {
-	return (inode.Flags & INDEX_FL) != 0
+func (i Inode) IsRegular() bool {
+	return i.Mode&0x8000 != 0 && i.Mode&0x4000 == 0
+}
+
+func (i Inode) IsSocket() bool {
+	return i.Mode&0xC000 != 0
+}
+
+func (i Inode) IsSymlink() bool {
+	return i.Mode&0xA000 != 0
+}
+
+// UsesExtents
+func (i *Inode) UsesExtents() bool {
+	return (i.Flags & EXTENTS_FL) != 0
+}
+
+// UsesDirectoryHashTree
+func (i *Inode) UsesDirectoryHashTree() bool {
+	return (i.Flags & INDEX_FL) != 0
 }
 
 // GetSize is get inode file size
-func (inode *Inode) GetSize() int64 {
-	return (int64(inode.SizeHigh) << 32) | int64(inode.SizeLo)
+func (i *Inode) GetSize() int64 {
+	return (int64(i.SizeHigh) << 32) | int64(i.SizeLo)
 }
 
-// ExtentInternal is not use
+// ExtentInternal
 type ExtentInternal struct {
 	Block    uint32 `struc:"uint32,little"`
 	LeafLow  uint32 `struc:"uint32,little"`
