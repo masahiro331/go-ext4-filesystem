@@ -17,6 +17,14 @@ Ext4 Block Layout
 +-----------------+------------------+-------------------+---------------------+-------------------+--------------+-------------+------------------+
 */
 
+func Check(r io.Reader) bool {
+	_, err := parseSuperBlock(r)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 func (ext4 *FileSystem) Extents(inode *Inode) ([]Extent, error) {
 	extents, err := ext4.extents(inode.BlockOrExtents[:], nil)
 	if err != nil {

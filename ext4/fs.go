@@ -28,6 +28,17 @@ type FileSystem struct {
 	gds []GroupDescriptor
 }
 
+func parseSuperBlock(r io.Reader) (Superblock, error) {
+	var sb Superblock
+	if err := binary.Read(r, binary.LittleEndian, &sb); err != nil {
+		return Superblock{}, xerrors.Errorf("failed to binary read super block: %w", err)
+	}
+	if sb.Magic != 0xEF53 {
+		return Superblock{}, xerrors.New("unsupported block")
+	}
+	return Superblock{}, nil
+}
+
 // NewFS is created io/fs.FS for ext4 filesystem
 func NewFS(r io.SectionReader) (*FileSystem, error) {
 	_, err := r.Seek(GroupZeroPadding, 0)
@@ -38,12 +49,10 @@ func NewFS(r io.SectionReader) (*FileSystem, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to read super block: %w", err)
 	}
-	var sb Superblock
-	if err := binary.Read(buf, binary.LittleEndian, &sb); err != nil {
-		return nil, xerrors.Errorf("failed to binary read super block: %w", err)
-	}
-	if sb.Magic != 0xEF53 {
-		return nil, xerrors.New("unsupported block")
+
+	sb, err := parseSuperBlock(buf)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to parse super block: %w", err)
 	}
 
 	numBlockGroups := (sb.GetBlockCount() + int64(sb.BlockPerGroup) - 1) / int64(sb.BlockPerGroup)
