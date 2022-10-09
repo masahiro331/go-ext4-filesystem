@@ -66,6 +66,14 @@ func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, 
 }
 
 func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
+	c, ok := ext4.cache.Get(inodeCacheKey(inodeAddress))
+	if ok {
+		i := c.(Inode)
+		if ok {
+			return &i, nil
+		}
+	}
+
 	bgd := ext4.gds[(inodeAddress-1)/int64(ext4.sb.InodePerGroup)]
 	index := (inodeAddress - 1) % int64(ext4.sb.InodePerGroup)
 	physicalOffset := bgd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
@@ -82,11 +90,13 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 		buf = buf[inodeOffset:]
 	}
 
-	inode := &Inode{}
-	if err := binary.Read(bytes.NewReader(buf), binary.LittleEndian, inode); err != nil {
+	inode := Inode{}
+	if err := binary.Read(bytes.NewReader(buf), binary.LittleEndian, &inode); err != nil {
 		return nil, xerrors.Errorf("failed to read binary: %w", err)
 	}
-	return inode, nil
+
+	ext4.cache.Add(inodeCacheKey(inodeAddress), inode)
+	return &inode, nil
 }
 
 func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {

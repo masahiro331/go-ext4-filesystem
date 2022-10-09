@@ -17,15 +17,17 @@ var (
 
 // File is implemented io/fs File interface
 type File struct {
-	// If implement io.Seeker, need to fs *Filesystem member
-	r         io.Reader
-	buf       *bytes.Buffer
-	extents   []Extent
-	filePath  string
-	availsize int64
-
 	FileInfo
+	fs           *FileSystem
+	buffer       *bytes.Buffer
+	filePath     string
+	currentBlock int64
+	size         int64
+	blockSize    int64
+	table        dataTable
 }
+
+type dataTable map[int64]int64
 
 // FileInfo is implemented io/fs FileInfo interface
 type FileInfo struct {
@@ -89,33 +91,46 @@ func (f *File) Stat() (fs.FileInfo, error) {
 }
 
 func (f *File) Read(p []byte) (n int, err error) {
-	for {
-		if len(p) > f.buf.Len() {
-			_, err := io.CopyN(f.buf, f.r, SectorSize)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return 0, xerrors.Errorf("failed to read file from source: %w", err)
-			}
-		} else {
-			break
+	if f.buffer.Len() == 0 {
+		f.currentBlock++
+		if f.currentBlock*f.blockSize >= f.Size() {
+			f.buffer = nil
+			return 0, io.EOF
 		}
-		return 0, nil
+	} else {
+		return f.buffer.Read(p)
 	}
 
-	n, err = f.buf.Read(p)
-	if err == io.EOF {
-		return 0, io.EOF
+	offset, ok := f.table[f.currentBlock]
+	if !ok {
+		// blockSize: 512
+		// size: 2000
+		// 2000 - 512 * 3 = 464 < 512
+		if f.Size()-f.blockSize*f.currentBlock < f.blockSize {
+			f.buffer.Write(make([]byte, f.Size()-f.blockSize*f.currentBlock))
+		}
+		f.buffer.Write(make([]byte, f.blockSize))
+	} else {
+		_, err := f.fs.r.Seek(offset, io.SeekStart)
+		if err != nil {
+			return 0, xerrors.Errorf("failed to seek block: %w", err)
+		}
+		buf, err := readBlock(f.fs.r, f.blockSize)
+		if err != nil {
+			return 0, xerrors.Errorf("failed to read block: %w", err)
+		}
+
+		b := buf.Bytes()
+		if f.Size()-f.blockSize*f.currentBlock < f.blockSize {
+			b = b[:f.Size()-f.blockSize*f.currentBlock]
+		}
+		n, err := f.buffer.Write(b)
+		if n != len(b) {
+			return 0, xerrors.Errorf("write buffer error: actual(%d), expected(%d)", n, len(b))
+		}
 	}
-	if err != nil {
-		return 0, xerrors.Errorf("failed to read file from buffer: %w", err)
-	}
-	f.availsize -= int64(n)
-	if f.availsize < 0 {
-		return n + int(f.availsize), err
-	}
-	return n, err
+
+	return f.buffer.Read(p)
 }
 
 func (f *File) Close() error {

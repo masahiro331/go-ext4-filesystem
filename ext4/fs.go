@@ -26,9 +26,15 @@ type FileSystem struct {
 
 	sb  Superblock
 	gds []GroupDescriptor
+
+	cache Cache
 }
 
 func parseSuperBlock(r io.Reader) (Superblock, error) {
+	_, err := r.Read(make([]byte, GroupZeroPadding))
+	if err != nil {
+		return Superblock{}, xerrors.Errorf("failed to seek padding: %w", err)
+	}
 	var sb Superblock
 	if err := binary.Read(r, binary.LittleEndian, &sb); err != nil {
 		return Superblock{}, xerrors.Errorf("failed to binary read super block: %w", err)
@@ -36,21 +42,12 @@ func parseSuperBlock(r io.Reader) (Superblock, error) {
 	if sb.Magic != 0xEF53 {
 		return Superblock{}, xerrors.New("unsupported block")
 	}
-	return Superblock{}, nil
+	return sb, nil
 }
 
 // NewFS is created io/fs.FS for ext4 filesystem
-func NewFS(r io.SectionReader) (*FileSystem, error) {
-	_, err := r.Seek(GroupZeroPadding, 0)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to seek padding: %w", err)
-	}
-	buf, err := readBlock(&r, SuperBlockSize)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to read super block: %w", err)
-	}
-
-	sb, err := parseSuperBlock(buf)
+func NewFS(r io.SectionReader, cache Cache) (*FileSystem, error) {
+	sb, err := parseSuperBlock(&r)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to parse super block: %w", err)
 	}
@@ -66,10 +63,14 @@ func NewFS(r io.SectionReader) (*FileSystem, error) {
 		return nil, xerrors.Errorf("failed to get group Descriptor: %w", err)
 	}
 
+	if cache == nil {
+		cache = &mockCache{}
+	}
 	fs := &FileSystem{
-		r:   &r,
-		sb:  sb,
-		gds: gds,
+		r:     &r,
+		sb:    sb,
+		gds:   gds,
+		cache: cache,
 	}
 	return fs, nil
 }
@@ -305,20 +306,23 @@ func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
 		return nil, err
 	}
 
-	var readers []io.Reader
+	dt := make(dataTable)
 	for _, e := range extents {
 		offset := e.offset() * ext4.sb.GetBlockSize()
-		size := ext4.sb.GetBlockSize() * int64(e.Len)
-		readers = append(readers, io.NewSectionReader(ext4.r, offset, size))
+		for i := int64(0); i < int64(e.Len); i++ {
+			dt[int64(e.Block)+i] = offset + i*ext4.sb.GetBlockSize()
+		}
 	}
 
 	return &File{
-		r:         io.MultiReader(readers...),
-		buf:       bytes.NewBuffer(nil),
-		filePath:  filePath,
-		extents:   extents,
-		availsize: fi.Size(),
-		FileInfo:  fi,
+		fs:           ext4,
+		FileInfo:     fi,
+		currentBlock: -1,
+		buffer:       bytes.NewBuffer(nil),
+		filePath:     filePath,
+		blockSize:    ext4.sb.GetBlockSize(),
+		table:        dt,
+		size:         fi.Size(),
 	}, nil
 }
 
