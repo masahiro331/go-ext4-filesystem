@@ -31,11 +31,9 @@ type FileSystem struct {
 }
 
 func readPadding(r io.Reader) error {
-	for i := 0; i < GroupZeroPadding/SectorSize; i++ {
-		_, err := r.Read(make([]byte, SectorSize))
-		if err != nil {
-			return err
-		}
+	_, err := readBlock(r, GroupZeroPadding)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -45,8 +43,12 @@ func parseSuperBlock(r io.Reader) (Superblock, error) {
 	if err != nil {
 		return Superblock{}, xerrors.Errorf("failed to seek padding: %w", err)
 	}
+	b, err := readBlock(r, 1024)
+	if err != nil {
+		return Superblock{}, xerrors.Errorf("failed to read super block: %w", err)
+	}
 	var sb Superblock
-	if err := binary.Read(r, binary.LittleEndian, &sb); err != nil {
+	if err := binary.Read(b, binary.LittleEndian, &sb); err != nil {
 		return Superblock{}, xerrors.Errorf("failed to binary read super block: %w", err)
 	}
 	if sb.Magic != 0xEF53 {
