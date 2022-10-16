@@ -30,8 +30,18 @@ type FileSystem struct {
 	cache Cache
 }
 
+func readPadding(r io.Reader) error {
+	for i := 0; i < GroupZeroPadding/SectorSize; i++ {
+		_, err := r.Read(make([]byte, SectorSize))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func parseSuperBlock(r io.Reader) (Superblock, error) {
-	_, err := r.Read(make([]byte, GroupZeroPadding))
+	err := readPadding(r)
 	if err != nil {
 		return Superblock{}, xerrors.Errorf("failed to seek padding: %w", err)
 	}
