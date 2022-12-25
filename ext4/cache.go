@@ -14,7 +14,7 @@ type Cache[K comparable, V any] interface {
 	Get(key K) (value V, ok bool)
 }
 
-type mockCache[K string, V Inode] struct{}
+type mockCache[K string, V any] struct{}
 
 func (c *mockCache[K, V]) Add(_ K, _ V) bool {
 	return false
