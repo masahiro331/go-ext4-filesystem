@@ -27,7 +27,7 @@ type FileSystem struct {
 	sb  Superblock
 	gds []GroupDescriptor
 
-	cache Cache
+	cache Cache[string, Inode]
 }
 
 func readPadding(r io.Reader) error {
@@ -58,7 +58,7 @@ func parseSuperBlock(r io.Reader) (Superblock, error) {
 }
 
 // NewFS is created io/fs.FS for ext4 filesystem
-func NewFS(r io.SectionReader, cache Cache) (*FileSystem, error) {
+func NewFS(r io.SectionReader, cache Cache[string, Inode]) (*FileSystem, error) {
 	sb, err := parseSuperBlock(&r)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to parse super block: %w", err)
@@ -76,7 +76,7 @@ func NewFS(r io.SectionReader, cache Cache) (*FileSystem, error) {
 	}
 
 	if cache == nil {
-		cache = &mockCache{}
+		cache = &mockCache[string, Inode]{}
 	}
 	fs := &FileSystem{
 		r:     &r,

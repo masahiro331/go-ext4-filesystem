@@ -1,25 +1,29 @@
 package ext4
 
+import "fmt"
+
 var (
-	_ Cache = &mockCache{}
+	_ Cache[string, Inode] = &mockCache[string, Inode]{}
 )
 
-type Cache interface {
+type Cache[K comparable, V any] interface {
 	// Add cache data
-	Add(key, value interface{}) bool
+	Add(key K, value V) bool
 
 	// Get returns key's value from the cache
-	Get(key interface{}) (value interface{}, ok bool)
+	Get(key K) (value V, ok bool)
 }
 
-type inodeCacheKey int64
+type mockCache[K string, V Inode] struct{}
 
-type mockCache struct{}
-
-func (c *mockCache) Add(_, _ interface{}) bool {
+func (c *mockCache[K, V]) Add(_ K, _ V) bool {
 	return false
 }
 
-func (c *mockCache) Get(_ interface{}) (interface{}, bool) {
-	return nil, false
+func (c *mockCache[K, V]) Get(_ K) (v V, evicted bool) {
+	return
+}
+
+func inodeCacheKey(n int64) string {
+	return fmt.Sprintf("ext4:%d", n)
 }
