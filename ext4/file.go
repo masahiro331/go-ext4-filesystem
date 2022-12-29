@@ -2,11 +2,12 @@ package ext4
 
 import (
 	"bytes"
-	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
 	"path/filepath"
 	"time"
+
+	"golang.org/x/xerrors"
 )
 
 var (
@@ -111,22 +112,17 @@ func (f *File) Read(p []byte) (n int, err error) {
 		}
 		f.buffer.Write(make([]byte, f.blockSize))
 	} else {
-		_, err := f.fs.r.Seek(offset, io.SeekStart)
-		if err != nil {
-			return 0, xerrors.Errorf("failed to seek block: %w", err)
-		}
-		buf, err := readBlock(f.fs.r, f.blockSize)
+		buf, err := readBlockAt(f.fs.r, offset, f.blockSize)
 		if err != nil {
 			return 0, xerrors.Errorf("failed to read block: %w", err)
 		}
 
-		b := buf.Bytes()
 		if f.Size()-f.blockSize*f.currentBlock < f.blockSize {
-			b = b[:f.Size()-f.blockSize*f.currentBlock]
+			buf = buf[:f.Size()-f.blockSize*f.currentBlock]
 		}
-		n, err := f.buffer.Write(b)
-		if n != len(b) {
-			return 0, xerrors.Errorf("write buffer error: actual(%d), expected(%d)", n, len(b))
+		n, err := f.buffer.Write(buf)
+		if n != len(buf) {
+			return 0, xerrors.Errorf("write buffer error: actual(%d), expected(%d)", n, len(buf))
 		}
 	}
 

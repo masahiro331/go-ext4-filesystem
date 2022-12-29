@@ -3,13 +3,14 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/lunixbochs/struc"
-	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/lunixbochs/struc"
+	"golang.org/x/xerrors"
 )
 
 var (
@@ -22,7 +23,7 @@ var (
 
 // FileSystem is implemented io/fs interface
 type FileSystem struct {
-	r *io.SectionReader
+	r io.ReaderAt
 
 	sb  Superblock
 	gds []GroupDescriptor
@@ -192,14 +193,11 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 
 	var entries []DirectoryEntry2
 	for _, e := range extents {
-		_, err := ext4.r.Seek(e.offset()*ext4.sb.GetBlockSize(), 0)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to seek: %w", err)
-		}
-		directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize()*int64(e.Len))
+		buf, err := readBlockAt(ext4.r, e.offset()*ext4.sb.GetBlockSize(), ext4.sb.GetBlockSize()*int64(e.Len))
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 		}
+		directoryReader := bytes.NewReader(buf)
 
 		for {
 			dirEntry := DirectoryEntry2{}
