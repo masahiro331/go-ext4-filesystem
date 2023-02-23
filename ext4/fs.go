@@ -3,13 +3,14 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/lunixbochs/struc"
-	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/lunixbochs/struc"
+	"golang.org/x/xerrors"
 )
 
 var (
@@ -104,7 +105,7 @@ func (ext4 *FileSystem) readDirEntry(name string) ([]fs.DirEntry, error) {
 	}
 
 	var currentIno int64
-	dirs := strings.Split(strings.Trim(filepath.Clean(name), string(filepath.Separator)), string(filepath.Separator))
+	dirs := strings.Split(strings.Trim(filepath.Clean(name), "/"), "/")
 	if len(dirs) == 1 && dirs[0] == "." || dirs[0] == "" {
 		var dirEntries []fs.DirEntry
 		for _, fileInfo := range fileInfos {
@@ -257,14 +258,14 @@ func (ext4 *FileSystem) ReadDirInfo(name string) (fs.FileInfo, error) {
 			mode:  fs.FileMode(inode.Mode),
 		}, nil
 	}
-	name = strings.TrimRight(name, string(filepath.Separator))
+	name = strings.TrimRight(name, "/")
 	dirs, dir := path.Split(name)
 	dirEntries, err := ext4.readDirEntry(dirs)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to read dir entry: %w", err)
 	}
 	for _, entry := range dirEntries {
-		if entry.Name() == strings.Trim(dir, string(filepath.Separator)) {
+		if entry.Name() == strings.Trim(dir, "/") {
 			return entry.Info()
 		}
 	}
@@ -274,7 +275,7 @@ func (ext4 *FileSystem) ReadDirInfo(name string) (fs.FileInfo, error) {
 func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 	const op = "open"
 
-	name = strings.TrimPrefix(name, string(filepath.Separator))
+	name = strings.TrimPrefix(name, "/")
 	if !fs.ValidPath(name) {
 		return nil, ext4.wrapError(op, name, fs.ErrInvalid)
 	}
