@@ -3,9 +3,10 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
-	"golang.org/x/xerrors"
 	"io"
 	"sort"
+
+	"golang.org/x/xerrors"
 )
 
 /*
@@ -151,6 +152,22 @@ func divWithRoundUp(a int, b int) int {
 		return n + 1
 	}
 	return n
+}
+
+func readBlockAt(r io.ReaderAt, offset int64, size int64) ([]byte, error) {
+	buf := make([]byte, 0, size)
+	for i := int64(0); i < size/SectorSize; i++ {
+		b := make([]byte, 0, SectorSize)
+		n, err := r.ReadAt(b, offset+i*SectorSize)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read sector(offset: %d): %w", offset, err)
+		}
+		if n != SectorSize {
+			return nil, xerrors.New("failed to read sector")
+		}
+		buf = append(buf, b...)
+	}
+	return buf, nil
 }
 
 func readBlock(r io.Reader, size int64) (*bytes.Buffer, error) {
