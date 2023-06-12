@@ -3,9 +3,12 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
-	"golang.org/x/xerrors"
 	"io"
 	"sort"
+
+	"golang.org/x/xerrors"
+
+	"github.com/masahiro331/go-ext4-filesystem/log"
 )
 
 /*
@@ -16,6 +19,10 @@ Ext4 Block Layout
 | 1024 bytes      | 1 block	         | many blocks       | many blocks         | 1 block           | 1 block      | many blocks | many more blocks |
 +-----------------+------------------+-------------------+---------------------+-------------------+--------------+-------------+------------------+
 */
+
+var (
+	ErrInodeNotFound = xerrors.New("inode not found")
+)
 
 func Check(r io.Reader) bool {
 	_, err := parseSuperBlock(r)
@@ -74,7 +81,12 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 		}
 	}
 
-	bgd := ext4.gds[(inodeAddress-1)/int64(ext4.sb.InodePerGroup)]
+	bgdIndex := (inodeAddress - 1) / int64(ext4.sb.InodePerGroup)
+	if bgdIndex >= int64(len(ext4.gds)) {
+		log.Logger.Debugf("inodeAddress: %d, InodePerGroup: %d, bgdIndex: %d", inodeAddress, ext4.sb.InodePerGroup, bgdIndex)
+		return nil, xerrors.Errorf("failed to get inode: bgdIndex is out of range bgdIndex: %d len(ext4.gds): %d", bgdIndex, len(ext4.gds))
+	}
+	bgd := ext4.gds[bgdIndex]
 	index := (inodeAddress - 1) % int64(ext4.sb.InodePerGroup)
 	physicalOffset := bgd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
 
