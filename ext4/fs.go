@@ -220,7 +220,7 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 				continue
 			}
 			if dirEntry.Flags == 0xDE {
-				break
+				continue
 			}
 			entries = append(entries, dirEntry)
 		}
