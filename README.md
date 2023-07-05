@@ -12,7 +12,7 @@ func main() {
         log.Fatal(err)
     }
 	info, _ := f.Stat()
-    filesystem, err := ext4.NewFS(io.NewSectionReader(f,0, info.Size()))
+    filesystem, err := ext4.NewFS(io.NewSectionReader(f,0, info.Size()), nil)
     if err != nil {
         log.Fatal(err)
     }
