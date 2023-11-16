@@ -62,9 +62,16 @@ func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, 
 	var gds []GroupDescriptor
 	for i := uint32(0); i < sb.GetGroupDescriptorTableCount(); i++ {
 		var gd GroupDescriptor
-		err = binary.Read(buf, binary.LittleEndian, &gd)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to parse group descriptor: %w", err)
+		if sb.FeatureInCompat64bit() {
+			err = binary.Read(buf, binary.LittleEndian, &gd)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to parse group descriptor: %w", err)
+			}
+		} else {
+			err = binary.Read(buf, binary.LittleEndian, &gd.GroupDescriptor32)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to parse group descriptor: %w", err)
+			}
 		}
 		gds = append(gds, gd)
 	}
