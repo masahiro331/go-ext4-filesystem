@@ -1,7 +1,7 @@
 package ext4
 
-// GroupDescriptor is 64 byte
-type GroupDescriptor struct {
+// GroupDescriptor32 is 32 byte
+type GroupDescriptor32 struct {
 	BlockBitmapLo     uint32 `struc:"uint32,little"`
 	InodeBitmapLo     uint32 `struc:"uint32,little"`
 	InodeTableLo      uint32 `struc:"uint32,little"`
@@ -14,6 +14,11 @@ type GroupDescriptor struct {
 	InodeBitmapCsumLo uint16 `struc:"uint16,little"`
 	ItableUnusedLo    uint16 `struc:"uint16,little"`
 	Checksum          uint16 `struc:"uint16,little"`
+}
+
+// GroupDescriptor is 64 byte
+type GroupDescriptor struct {
+	GroupDescriptor32
 	BlockBitmapHi     uint32 `struc:"uint32,little"`
 	InodeBitmapHi     uint32 `struc:"uint32,little"`
 	InodeTableHi      uint32 `struc:"uint32,little"`
