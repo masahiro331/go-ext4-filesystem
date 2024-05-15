@@ -11,8 +11,16 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-	info, _ := f.Stat()
-    filesystem, err := ext4.NewFS(io.NewSectionReader(f,0, info.Size()), nil)
+    filesize, err := f.Seek(0, io.SeekEnd)
+    if err != nil {
+        log.Fatal(err)
+    }
+    _, err = f.Seek(0, io.SeekStart)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    filesystem, err := ext4.NewFS(io.NewSectionReader(f,0, filesize), nil)
     if err != nil {
         log.Fatal(err)
     }
