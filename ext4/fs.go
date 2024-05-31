@@ -192,6 +192,54 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get root inode: %w", err)
 	}
+
+	if !inode.UsesExtents() {
+		var dirEntries []DirectoryEntry2
+
+		for i := 0; i < 15; i++ {
+			blockAddress := inode.GetBlockAddress(i)
+
+			if blockAddress == 0 {
+				continue
+			}
+
+			_, err := ext4.r.Seek(int64(blockAddress) * ext4.sb.GetBlockSize(), 0)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to seek: %w", err)
+			}
+
+			// TODO: なんか取る量が多すぎるので、どこかから適正量が取得できないか要調査
+			directoryReader, err := readBlock(ext4.r, SectorSize * ext4.sb.GetBlockSize())
+			if err != nil {
+				return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+			}
+
+			for {
+				dirEntry := DirectoryEntry2{}
+				// TODO: Error handling
+				_ = struc.Unpack(directoryReader, &dirEntry)
+				// TODO: 最初に取る量が多い都合上、データが存在していない領域まで取ってしまう。
+				// 暫定で directoryEntry の Inode がおかしい場合は break しているが、適正量が取れていればこの処理はいらないはず。
+				// あるいは、取れないのであればもっと適切なエラー処理をするべき。
+				if dirEntry.Inode == 0 {
+					break
+				}
+				align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
+				_, err := directoryReader.Read(make([]byte, align))
+				if err != nil {
+					return nil, xerrors.Errorf("failed to read align: %w", err)
+				}
+				if dirEntry.Name == "." || dirEntry.Name == ".." {
+					continue
+				}
+				if dirEntry.Flags == 0xDE {
+					continue
+				}
+			}
+		}
+		return dirEntries, nil
+	}
+
 	if inode.UsesExtents() {
 		extents, err := ext4.Extents(inode)
 		if err != nil {
