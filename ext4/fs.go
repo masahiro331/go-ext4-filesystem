@@ -219,7 +219,7 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 			for {
 				dirEntry := DirectoryEntry2{}
 
-				_ = struc.Unpack(directoryReader, &dirEntry)
+				err = struc.Unpack(directoryReader, &dirEntry)
 				if err != nil {
 					if err == io.EOF {
 						break
