@@ -235,6 +235,7 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 				if dirEntry.Flags == 0xDE {
 					continue
 				}
+				dirEntries = append(dirEntries, dirEntry)
 			}
 		}
 		return dirEntries, nil
