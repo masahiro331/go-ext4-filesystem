@@ -1,5 +1,10 @@
 package ext4
 
+import (
+	"bytes"
+	"encoding/binary"
+)
+
 // ExtentHeader is ...
 type ExtentHeader struct {
 	Magic      uint16 `struc:"uint16,little"`
@@ -74,6 +79,13 @@ type Inode struct {
 	Reserved [96]uint8 `struc:"[96]uint32,little"`
 }
 
+type BlockAddressing struct {
+	DirectBlock [12]uint32 `struc:"[12]uint32,little"`
+	SingleIndirectBlock uint32 `struc:"uint32,little"`
+	DoubleIndirectBlock uint32 `struc:"uint32,little"`
+	TripleIndirectBlock uint32 `struc:"uint32,little"`
+}
+
 func (i Inode) IsDir() bool {
 	return i.Mode&0x4000 != 0 && i.Mode&0x8000 == 0
 }
@@ -103,6 +115,24 @@ func (i *Inode) UsesDirectoryHashTree() bool {
 // GetSize is get inode file size
 func (i *Inode) GetSize() int64 {
 	return (int64(i.SizeHigh) << 32) | int64(i.SizeLo)
+}
+
+func (i *Inode) GetBlockAddress(blockAddressIndex int) uint32 {
+	addresses := BlockAddressing{}
+	binary.Read(bytes.NewReader(i.BlockOrExtents[:]), binary.LittleEndian, &addresses)
+	if blockAddressIndex < 12 {
+		return addresses.DirectBlock[blockAddressIndex]
+	} else if blockAddressIndex == 12 {
+		// TODO: resolve single indirect block
+		return addresses.SingleIndirectBlock
+	} else if blockAddressIndex == 13 {
+		// TODO: resolve double indirect block
+		return addresses.DoubleIndirectBlock
+	} else if blockAddressIndex == 14 {
+		// TODO: resolve triple indirect block
+		return addresses.TripleIndirectBlock
+	}
+	return 0
 }
 
 // ExtentInternal
