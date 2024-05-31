@@ -227,3 +227,10 @@ func (sb *Superblock) GetBlockSize() int64 {
 func (sb *Superblock) GetGroupsPerFlex() int64 {
 	return 1 << sb.LogGroupPerFlex
 }
+
+func (sb *Superblock) GetFirstInodeNo() int64 {
+	if sb.FirstIno <= 11 {
+		return 12
+	}
+	return int64(sb.FirstIno)
+}

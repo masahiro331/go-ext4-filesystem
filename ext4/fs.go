@@ -103,6 +103,12 @@ func (ext4 *FileSystem) readDirEntry(name string) ([]fs.DirEntry, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to list file infos: %w", err)
 	}
+	if fileInfos == nil || len(fileInfos) == 0 {
+		fileInfos, err = ext4.listFileInfo(ext4.sb.GetFirstInodeNo())
+		if err != nil {
+			return nil, xerrors.Errorf("failed to list file infos: %w", err)
+		}
+	}
 
 	var currentIno int64
 	dirs := strings.Split(strings.Trim(filepath.Clean(name), "/"), "/")
@@ -186,43 +192,132 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get root inode: %w", err)
 	}
-	extents, err := ext4.Extents(inode)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to get extents: %w", err)
+	if inode.UsesExtents() {
+		extents, err := ext4.Extents(inode)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to get extents: %w", err)
+		}
+
+		var entries []DirectoryEntry2
+		for _, e := range extents {
+			_, err := ext4.r.Seek(e.offset()*ext4.sb.GetBlockSize(), 0)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to seek: %w", err)
+			}
+			directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize()*int64(e.Len))
+			if err != nil {
+				return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+			}
+
+			for {
+				dirEntry := DirectoryEntry2{}
+				err = struc.Unpack(directoryReader, &dirEntry)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
+				}
+				align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
+				_, err := directoryReader.Read(make([]byte, align))
+				if err != nil {
+					return nil, xerrors.Errorf("failed to read align: %w", err)
+				}
+				if dirEntry.Name == "." || dirEntry.Name == ".." {
+					continue
+				}
+				if dirEntry.Flags == 0xDE {
+					continue
+				}
+				entries = append(entries, dirEntry)
+			}
+		}
+		return entries, nil
 	}
 
+	entries, err := ext4.getDirEntries(ino)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to get dir entries: %w", err)
+	}
+
+	return entries, nil
+	//indirectsPerBlock := ext4.sb.GetBlockSize() / 4
+	//// Single indirection
+	//if num < indirectsPerBlock {
+	//	ptr := int64(binary.LittleEndian.Uint32(inode.BlockOrExtents[4*12:]))
+	//	return inode.getIndirectBlockPtr(ptr, num), 1, true
+	//}
+	//num -= indirectsPerBlock
+	//
+	//// Double indirection
+	//if num < indirectsPerBlock*indirectsPerBlock {
+	//	ptr := int64(binary.LittleEndian.Uint32(inode.BlockOrExtents[4*13:]))
+	//	l1 := inode.getIndirectBlockPtr(ptr, num/indirectsPerBlock)
+	//	return inode.getIndirectBlockPtr(l1, num%indirectsPerBlock), 1, true
+	//}
+	//
+	//num -= indirectsPerBlock * indirectsPerBlock
+	//
+	//// Triple indirection
+	//if num < indirectsPerBlock*indirectsPerBlock*indirectsPerBlock {
+	//	log.Println("Triple indirection")
+	//
+	//	ptr := int64(binary.LittleEndian.Uint32(inode.BlockOrExtents[4*14:]))
+	//	l1 := inode.getIndirectBlockPtr(ptr, num/(indirectsPerBlock*indirectsPerBlock))
+	//	l2 := inode.getIndirectBlockPtr(l1, (num/indirectsPerBlock)%indirectsPerBlock)
+	//	return inode.getIndirectBlockPtr(l2, num%(indirectsPerBlock*indirectsPerBlock)), 1, true
+	//}
+	//
+	//log.Fatalf("Exceeded maximum possible block count")
+	//return 0, 0, false
+}
+
+func (ext4 *FileSystem) getDirEntries(ino int64) ([]DirectoryEntry2, error) {
+	inode, err := ext4.getInode(ino)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to get root inode: %w", err)
+	}
 	var entries []DirectoryEntry2
-	for _, e := range extents {
-		_, err := ext4.r.Seek(e.offset()*ext4.sb.GetBlockSize(), 0)
+	// Direct block
+	for i := 0; i < 12; i++ {
+
+		blockAddress := int64(binary.LittleEndian.Uint32(inode.BlockOrExtents[4*i:]))
+		if blockAddress == 0 {
+			break
+		}
+		_, err := ext4.r.Seek(blockAddress*ext4.sb.GetBlockSize(), io.SeekStart)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to seek: %w", err)
 		}
-		directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize()*int64(e.Len))
+
+		directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 		}
+		dirEntry := DirectoryEntry2{}
+		err = struc.Unpack(directoryReader, &dirEntry)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
+		}
+		align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
+		_, err = directoryReader.Read(make([]byte, align))
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read align: %w", err)
+		}
+		if dirEntry.Name == "." || dirEntry.Name == ".." {
+			continue
+		}
 
-		for {
-			dirEntry := DirectoryEntry2{}
-			err = struc.Unpack(directoryReader, &dirEntry)
+		entries = append(entries, dirEntry)
+		if dirEntry.isDir() {
+			dirEntries, err := ext4.listEntries(int64(dirEntry.Inode))
 			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
+				return nil, xerrors.Errorf("failed to get dir entries: %w", err)
 			}
-			align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
-			_, err := directoryReader.Read(make([]byte, align))
-			if err != nil {
-				return nil, xerrors.Errorf("failed to read align: %w", err)
-			}
-			if dirEntry.Name == "." || dirEntry.Name == ".." {
-				continue
-			}
-			if dirEntry.Flags == 0xDE {
-				continue
-			}
-			entries = append(entries, dirEntry)
+			entries = append(entries, dirEntries...)
 		}
 	}
 	return entries, nil

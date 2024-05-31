@@ -3,12 +3,12 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"sort"
 
-	"golang.org/x/xerrors"
-
 	"github.com/masahiro331/go-ext4-filesystem/log"
+	"golang.org/x/xerrors"
 )
 
 /*
@@ -131,6 +131,9 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 			var extent Extent
 			err := binary.Read(extentReader, binary.LittleEndian, &extent)
 			if err != nil {
+				if errors.Is(err, io.ErrUnexpectedEOF) {
+					break
+				}
 				return nil, xerrors.Errorf("failed to read leaf node extent: %w", err)
 			}
 			extents = append(extents, extent)
