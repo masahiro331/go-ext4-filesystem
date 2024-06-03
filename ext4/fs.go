@@ -103,12 +103,6 @@ func (ext4 *FileSystem) readDirEntry(name string) ([]fs.DirEntry, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to list file infos: %w", err)
 	}
-	if fileInfos == nil || len(fileInfos) == 0 {
-		fileInfos, err = ext4.listFileInfo(ext4.sb.GetFirstInodeNo())
-		if err != nil {
-			return nil, xerrors.Errorf("failed to list file infos: %w", err)
-		}
-	}
 
 	var currentIno int64
 	dirs := strings.Split(strings.Trim(filepath.Clean(name), "/"), "/")

@@ -33,14 +33,6 @@ type DirectoryEntry2 struct {
 	Name    string `struc:"[]byte"`
 }
 
-func (d *DirectoryEntry2) isFile() bool {
-	return (d.Flags & DIR_ENTRY_FILE_TYPE_REGULAR_FILE) != 0
-}
-
-func (d *DirectoryEntry2) isDir() bool {
-	return (d.Flags & DIR_ENTRY_FILE_TYPE_DIRECTORY) != 0
-}
-
 // Inode is index-node
 type Inode struct {
 	Mode           uint16   `struc:"uint16,little"`
