@@ -113,7 +113,11 @@ func (i *Inode) GetSize() int64 {
 
 func (i *Inode) GetBlockAddress(blockAddressIndex int) (uint32, error) {
 	addresses := BlockAddressing{}
-	binary.Read(bytes.NewReader(i.BlockOrExtents[:]), binary.LittleEndian, &addresses)
+	err := binary.Read(bytes.NewReader(i.BlockOrExtents[:]), binary.LittleEndian, &addresses)
+	if err != nil {
+		return 0, xerrors.Errorf("failed to read block addressing: %w", err)
+	}
+
 	if blockAddressIndex < 12 {
 		return addresses.DirectBlock[blockAddressIndex], nil
 	} else if blockAddressIndex == 12 {
