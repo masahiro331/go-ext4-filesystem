@@ -124,7 +124,7 @@ func resolveSingleIndirectBlockAddress(ext4 *FileSystem, singleIndirectBlockAddr
 		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 	}
 
-	for singleIndirectBlockAddresses.Len() >= 4 {
+	for singleIndirectBlockAddresses.Len() > 0 {
 		address := binary.LittleEndian.Uint32(singleIndirectBlockAddresses.Next(4))
 		if address == 0 {
 			break
