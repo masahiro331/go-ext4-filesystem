@@ -190,16 +190,12 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	if !inode.UsesExtents() {
 		var dirEntries []DirectoryEntry2
 
-		for i := 0; i < 15; i++ {
-			blockAddress, err := inode.GetBlockAddress(i)
-			if err != nil {
-				return nil, xerrors.Errorf("failed to get block address: %w", err)
-			}
+		blockAddresses, err := inode.GetBlockAddresses(ext4)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to get block address: %w", err)
+		}
 
-			if blockAddress == 0 {
-				continue
-			}
-
+		for _, blockAddress := range blockAddresses {
 			_, err = ext4.r.Seek(int64(blockAddress)*ext4.sb.GetBlockSize(), 0)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to seek: %w", err)
@@ -365,13 +361,42 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 			inode: dir.inode,
 			mode:  fs.FileMode(dir.inode.Mode),
 		}
-		f, err := ext4.file(fi, name)
+		var f *File
+		if fi.inode.UsesExtents() {
+			f, err = ext4.file(fi, name)
+		} else {
+			f, err = ext4.fileFromBlock(fi, name)
+		}
 		if err != nil {
 			return nil, xerrors.Errorf("failed to get file(inode: %d): %w", dir.ino, err)
 		}
 		return f, nil
 	}
 	return nil, fs.ErrNotExist
+}
+
+func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, error) {
+	blockAddresses, err := fi.inode.GetBlockAddresses(ext4)
+	if err != nil {
+		return nil, err
+	}
+
+	dt := make(dataTable)
+	for i, blockAddress := range blockAddresses {
+		offset := int64(blockAddress) * ext4.sb.GetBlockSize()
+		dt[int64(i)] = offset
+	}
+
+	return &File{
+		fs:           ext4,
+		FileInfo:     fi,
+		currentBlock: -1,
+		buffer:       bytes.NewBuffer(nil),
+		filePath:     filePath,
+		blockSize:    ext4.sb.GetBlockSize(),
+		table:        dt,
+		size:         fi.Size(),
+	}, nil
 }
 
 func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
