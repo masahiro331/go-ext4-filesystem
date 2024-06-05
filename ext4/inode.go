@@ -111,26 +111,128 @@ func (i *Inode) GetSize() int64 {
 	return (int64(i.SizeHigh) << 32) | int64(i.SizeLo)
 }
 
-func (i *Inode) GetBlockAddress(blockAddressIndex int) (uint32, error) {
+func resolveSingleIndirectBlockAddress(ext4 *FileSystem, singleIndirectBlockAddress uint32) ([]uint32, error) {
+	var blockAddresses []uint32
+
+	_, err := ext4.r.Seek(int64(singleIndirectBlockAddress)*ext4.sb.GetBlockSize(), 0)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to seek: %w", err)
+	}
+
+	singleIndirectBlockAddresses, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+	}
+
+	for singleIndirectBlockAddresses.Len() >= 4 {
+		address := binary.LittleEndian.Uint32(singleIndirectBlockAddresses.Next(4))
+		if address == 0 {
+			break
+		}
+		blockAddresses = append(blockAddresses, address)
+	}
+
+	return blockAddresses, nil
+}
+
+func resolveDoubleIndirectBlockAddress(ext4 *FileSystem, doubleIndirectBlockAddress uint32) ([]uint32, error) {
+	var blockAddresses []uint32
+
+	_, err := ext4.r.Seek(int64(doubleIndirectBlockAddress)*ext4.sb.GetBlockSize(), 0)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to seek: %w", err)
+	}
+
+	doubleIndirectBlockAddresses, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+	}
+
+	for doubleIndirectBlockAddresses.Len() > 0 {
+		singleIndirectBlockAddress := binary.LittleEndian.Uint32(doubleIndirectBlockAddresses.Next(4))
+		if singleIndirectBlockAddress == 0 {
+			break
+		}
+
+		singleIndirectBlockAddresses, err := resolveSingleIndirectBlockAddress(ext4, singleIndirectBlockAddress)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read single indirect block addressing: %w", err)
+		}
+		blockAddresses = append(blockAddresses, singleIndirectBlockAddresses...)
+	}
+
+	return blockAddresses, nil
+}
+
+func resolveTripleIndirectBlockAddress(ext4 *FileSystem, tripleIndirectBlockAddress uint32) ([]uint32, error) {
+	var blockAddresses []uint32
+
+	_, err := ext4.r.Seek(int64(tripleIndirectBlockAddress)*ext4.sb.GetBlockSize(), 0)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to seek: %w", err)
+	}
+
+	tripleIndirectBlockAddresses, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+	}
+
+	for tripleIndirectBlockAddresses.Len() > 0 {
+		doubleIndirectBlockAddress := binary.LittleEndian.Uint32(tripleIndirectBlockAddresses.Next(4))
+		if doubleIndirectBlockAddress == 0 {
+			break
+		}
+
+		doubleIndirectBlockAddresses, err := resolveDoubleIndirectBlockAddress(ext4, doubleIndirectBlockAddress)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read double indirect block addressing: %w", err)
+		}
+		blockAddresses = append(blockAddresses, doubleIndirectBlockAddresses...)
+	}
+
+	return blockAddresses, nil
+}
+
+func (i *Inode) GetBlockAddresses(ext4 *FileSystem) ([]uint32, error) {
 	addresses := BlockAddressing{}
 	err := binary.Read(bytes.NewReader(i.BlockOrExtents[:]), binary.LittleEndian, &addresses)
 	if err != nil {
-		return 0, xerrors.Errorf("failed to read block addressing: %w", err)
+		return nil, xerrors.Errorf("failed to read block addressing: %w", err)
 	}
 
-	if blockAddressIndex < 12 {
-		return addresses.DirectBlock[blockAddressIndex], nil
-	} else if blockAddressIndex == 12 {
-		// TODO: resolve single indirect block
-		return addresses.SingleIndirectBlock, nil
-	} else if blockAddressIndex == 13 {
-		// TODO: resolve double indirect block
-		return addresses.DoubleIndirectBlock, nil
-	} else if blockAddressIndex == 14 {
-		// TODO: resolve triple indirect block
-		return addresses.TripleIndirectBlock, nil
+	var blockAddresses []uint32
+	for _, blockAddress := range addresses.DirectBlock {
+		if blockAddress == 0 {
+			break
+		}
+		blockAddresses = append(blockAddresses, blockAddress)
 	}
-	return 0, xerrors.Errorf("failed to get block address on %d", i)
+
+	if addresses.SingleIndirectBlock != 0 {
+		singleIndirectBlockAddresses, err := resolveSingleIndirectBlockAddress(ext4, addresses.SingleIndirectBlock)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read single indirect block addressing: %w", err)
+		}
+		blockAddresses = append(blockAddresses, singleIndirectBlockAddresses...)
+	}
+
+	if addresses.DoubleIndirectBlock != 0 {
+		doubleIndirectBlockAddresses, err := resolveDoubleIndirectBlockAddress(ext4, addresses.DoubleIndirectBlock)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read double indirect block addressing: %w", err)
+		}
+		blockAddresses = append(blockAddresses, doubleIndirectBlockAddresses...)
+	}
+
+	if addresses.TripleIndirectBlock != 0 {
+		tripleIndirectBlockAddresses, err := resolveTripleIndirectBlockAddress(ext4, addresses.TripleIndirectBlock)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read triple indirect block addressing: %w", err)
+		}
+		blockAddresses = append(blockAddresses, tripleIndirectBlockAddresses...)
+	}
+
+	return blockAddresses, nil
 }
 
 // ExtentInternal
