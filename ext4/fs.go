@@ -346,3 +346,7 @@ func (ext4 *FileSystem) wrapError(op, path string, err error) error {
 		Err:  err,
 	}
 }
+
+func (ext4 *FileSystem) GetSuperBlock() Superblock {
+	return ext4.sb
+}
