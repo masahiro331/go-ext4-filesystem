@@ -201,7 +201,7 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 				return nil, xerrors.Errorf("failed to seek: %w", err)
 			}
 
-			directoryReader, err := readBlock(ext4.r, SectorSize*ext4.sb.GetBlockSize())
+			directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
 			if err != nil {
 				return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 			}
