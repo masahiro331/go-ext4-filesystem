@@ -378,7 +378,7 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, error) {
 	blockAddresses, err := fi.inode.GetBlockAddresses(ext4)
 	if err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("failed to get block addresses: %w", err)
 	}
 
 	dt := make(dataTable)
