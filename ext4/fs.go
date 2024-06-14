@@ -181,6 +181,46 @@ func (ext4 *FileSystem) listFileInfo(ino int64) ([]FileInfo, error) {
 	return fileInfos, nil
 }
 
+func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, error) {
+	var dirEntries []DirectoryEntry2
+
+	for {
+		dirEntry := DirectoryEntry2{}
+
+		err := struc.Unpack(directoryReader, &dirEntry)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
+		}
+
+		if dirEntry.RecLen == 0 {
+			break
+		}
+
+		align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
+		_, err = directoryReader.Read(make([]byte, align))
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read align: %w", err)
+		}
+
+		if dirEntry.Name == "." || dirEntry.Name == ".." {
+			continue
+		}
+		if dirEntry.Flags == 0xDE {
+			continue
+		}
+		if dirEntry.Flags == 0 {
+			continue
+		}
+
+		dirEntries = append(dirEntries, dirEntry)
+	}
+
+	return dirEntries, nil
+}
+
 func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	inode, err := ext4.getInode(ino)
 	if err != nil {
@@ -206,39 +246,11 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 				return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 			}
 
-			for {
-				dirEntry := DirectoryEntry2{}
-
-				err = struc.Unpack(directoryReader, &dirEntry)
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
-				}
-
-				if dirEntry.RecLen == 0 {
-					break
-				}
-
-				align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
-				_, err := directoryReader.Read(make([]byte, align))
-				if err != nil {
-					return nil, xerrors.Errorf("failed to read align: %w", err)
-				}
-
-				if dirEntry.Name == "." || dirEntry.Name == ".." {
-					continue
-				}
-				if dirEntry.Flags == 0xDE {
-					continue
-				}
-				if dirEntry.Flags == 0 {
-					continue
-				}
-
-				dirEntries = append(dirEntries, dirEntry)
+			extracted, err := extractDirectoryEntries(directoryReader)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to extract directory entries: %w", err)
 			}
+			dirEntries = append(dirEntries, extracted...)
 		}
 		return dirEntries, nil
 	}
@@ -259,28 +271,11 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 			return nil, xerrors.Errorf("failed to read directory entry: %w", err)
 		}
 
-		for {
-			dirEntry := DirectoryEntry2{}
-			err = struc.Unpack(directoryReader, &dirEntry)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return nil, xerrors.Errorf("failed to parse directory entry: %w", err)
-			}
-			align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
-			_, err := directoryReader.Read(make([]byte, align))
-			if err != nil {
-				return nil, xerrors.Errorf("failed to read align: %w", err)
-			}
-			if dirEntry.Name == "." || dirEntry.Name == ".." {
-				continue
-			}
-			if dirEntry.Flags == 0xDE {
-				continue
-			}
-			entries = append(entries, dirEntry)
+		dirEntries, err := extractDirectoryEntries(directoryReader)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to extract directory entries: %w", err)
 		}
+		entries = append(entries, dirEntries...)
 	}
 	return entries, nil
 }
