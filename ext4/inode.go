@@ -121,7 +121,7 @@ func resolveSingleIndirectBlockAddress(ext4 *FileSystem, singleIndirectBlockAddr
 
 	singleIndirectBlockAddresses, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
 	if err != nil {
-		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+		return nil, xerrors.Errorf("failed to read directory entry at block address %#x: %w", singleIndirectBlockAddress, err)
 	}
 
 	for singleIndirectBlockAddresses.Len() > 0 {
@@ -145,7 +145,7 @@ func resolveDoubleIndirectBlockAddress(ext4 *FileSystem, doubleIndirectBlockAddr
 
 	doubleIndirectBlockAddresses, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
 	if err != nil {
-		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+		return nil, xerrors.Errorf("failed to read directory entry at block address %#x: %w", doubleIndirectBlockAddress, err)
 	}
 
 	for doubleIndirectBlockAddresses.Len() > 0 {
@@ -174,7 +174,7 @@ func resolveTripleIndirectBlockAddress(ext4 *FileSystem, tripleIndirectBlockAddr
 
 	tripleIndirectBlockAddresses, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
 	if err != nil {
-		return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+		return nil, xerrors.Errorf("failed to read directory entry at block address %#x: %w", tripleIndirectBlockAddress, err)
 	}
 
 	for tripleIndirectBlockAddresses.Len() > 0 {
