@@ -422,6 +422,129 @@ func TestListEntriesHTreeBlockAddressing(t *testing.T) {
 	}
 }
 
+func TestListEntriesHTreeRootBlockReadFailure(t *testing.T) {
+	// Image too small: ReadAt will fail when trying to read the root block
+	smallImage := make([]byte, 16)
+	sr := io.NewSectionReader(bytes.NewReader(smallImage), 0, 16)
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2}, // 4096 byte blocks
+		cache: &mockCache[string, any]{},
+	}
+
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: uint32(4096),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 1, StartHi: 0, StartLo: 0,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	_, err := ext4fs.listEntriesHTree(rootInode)
+	if err == nil {
+		t.Fatal("expected error for root block read failure, got nil")
+	}
+}
+
+func TestCollectLeafBlocksInternalNodeTooSmall(t *testing.T) {
+	const blockSize = 4096
+
+	// Image with root block and an internal node that is too small (< 0x0C meaningful bytes)
+	totalSize := 6 * blockSize
+	image := make([]byte, totalSize)
+
+	// Root block at physical block 4, indirect_levels=1, points to internal node at logical block 1
+	rootBlock := buildHTreeRootBlock(blockSize, 1, []uint32{1})
+	copy(image[4*blockSize:], rootBlock)
+
+	// Internal node at physical block 5 (logical block 1): fill with zeros (too small / invalid)
+	// All zeros means the fake dirent and DxCountLimit are zero.
+	// This is a valid parse but count=0, so no child blocks. Not an error per se.
+	// To trigger the "too small" error, we need len(data) < 0x0C, but readLogicalBlock
+	// always returns blockSize bytes. So this path can only fail if ReadAt fails.
+	// Let's instead test that count=0 in internal node returns no entries gracefully.
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2},
+		cache: &mockCache[string, any]{},
+	}
+
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: 2 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 2, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	entries, err := ext4fs.listEntriesHTree(rootInode)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries from empty internal node, got %d", len(entries))
+	}
+}
+
+func TestReadLogicalBlockMissingBlock(t *testing.T) {
+	const blockSize = 4096
+
+	image := make([]byte, blockSize)
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(blockSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2},
+		cache: &mockCache[string, any]{},
+	}
+
+	blockMap := map[uint32]int64{
+		0: 0,
+	}
+
+	// Read existing block - should succeed
+	_, err := ext4fs.readLogicalBlock(blockMap, 0)
+	if err != nil {
+		t.Fatalf("unexpected error reading existing block: %v", err)
+	}
+
+	// Read missing block - should fail
+	_, err = ext4fs.readLogicalBlock(blockMap, 99)
+	if err == nil {
+		t.Fatal("expected error for missing logical block, got nil")
+	}
+}
+
+func TestParseDxBlockNumbersTruncatedData(t *testing.T) {
+	// count=3 but data only has room for header entry + 1 regular entry (not 2)
+	data := make([]byte, 4+8)                    // block0(4) + entry1(8), missing entry2
+	binary.LittleEndian.PutUint32(data[0:], 10)  // block0
+	binary.LittleEndian.PutUint32(data[4:], 100) // hash1
+	binary.LittleEndian.PutUint32(data[8:], 20)  // block1
+
+	got := parseDxBlockNumbers(data, 3)
+	// Should get 2 blocks (10, 20) since entry2 data is missing
+	if len(got) != 2 {
+		t.Fatalf("expected 2 blocks from truncated data, got %d", len(got))
+	}
+	if got[0] != 10 || got[1] != 20 {
+		t.Errorf("expected [10, 20], got %v", got)
+	}
+}
+
 func TestListEntriesDispatchesToHTree(t *testing.T) {
 	const blockSize = 4096
 
