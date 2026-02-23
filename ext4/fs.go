@@ -200,7 +200,11 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 			break
 		}
 
-		align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
+		nameAndHeader := uint16(dirEntry.NameLen) + 8
+		if dirEntry.RecLen < nameAndHeader {
+			break
+		}
+		align := dirEntry.RecLen - nameAndHeader
 		_, err = directoryReader.Read(make([]byte, align))
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read align: %w", err)
@@ -322,6 +326,9 @@ func (ext4 *FileSystem) collectLeafBlocks(blockMap map[uint32]int64, nodeBlocks 
 		if err := binary.Read(bytes.NewReader(data[0x08:0x0C]), binary.LittleEndian, &cl); err != nil {
 			return nil, xerrors.Errorf("failed to parse dx_countlimit in internal node: %w", err)
 		}
+		if cl.Count > cl.Limit {
+			return nil, xerrors.Errorf("htree internal node: count (%d) exceeds limit (%d)", cl.Count, cl.Limit)
+		}
 
 		childBlocks := parseDxBlockNumbers(data[0x0C:], cl.Count)
 
@@ -363,10 +370,16 @@ func (ext4 *FileSystem) listEntriesHTree(inode *Inode) ([]DirectoryEntry2, error
 	if err := binary.Read(bytes.NewReader(rootData[0x18:0x20]), binary.LittleEndian, &rootInfo); err != nil {
 		return nil, xerrors.Errorf("failed to parse dx_root_info: %w", err)
 	}
+	if rootInfo.IndirectLevels > 3 {
+		return nil, xerrors.Errorf("htree indirect_levels (%d) exceeds maximum (3)", rootInfo.IndirectLevels)
+	}
 
 	var cl DxCountLimit
 	if err := binary.Read(bytes.NewReader(rootData[0x20:0x24]), binary.LittleEndian, &cl); err != nil {
 		return nil, xerrors.Errorf("failed to parse dx_countlimit: %w", err)
+	}
+	if cl.Count > cl.Limit {
+		return nil, xerrors.Errorf("htree root: count (%d) exceeds limit (%d)", cl.Count, cl.Limit)
 	}
 
 	// Collect block numbers from root dx_entries
@@ -380,13 +393,17 @@ func (ext4 *FileSystem) listEntriesHTree(inode *Inode) ([]DirectoryEntry2, error
 
 	// Read directory entries from each leaf block
 	var entries []DirectoryEntry2
+	buf := make([]byte, ext4.sb.GetBlockSize())
 	for _, logBlock := range leafBlocks {
-		data, err := ext4.readLogicalBlock(blockMap, logBlock)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to read leaf block %d: %w", logBlock, err)
+		offset, ok := blockMap[logBlock]
+		if !ok {
+			return nil, xerrors.Errorf("leaf block %d not found in block map", logBlock)
+		}
+		if _, err := ext4.r.ReadAt(buf, offset); err != nil {
+			return nil, xerrors.Errorf("failed to read leaf block %d at offset %#x: %w", logBlock, offset, err)
 		}
 
-		dirEntries, err := extractDirectoryEntries(bytes.NewBuffer(data))
+		dirEntries, err := extractDirectoryEntries(bytes.NewBuffer(buf))
 		if err != nil {
 			return nil, xerrors.Errorf("failed to extract directory entries from leaf block %d: %w", logBlock, err)
 		}

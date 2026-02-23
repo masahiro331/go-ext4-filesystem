@@ -452,7 +452,7 @@ func TestListEntriesHTreeRootBlockReadFailure(t *testing.T) {
 	}
 }
 
-func TestCollectLeafBlocksInternalNodeTooSmall(t *testing.T) {
+func TestCollectLeafBlocksInternalNodeCountZero(t *testing.T) {
 	const blockSize = 4096
 
 	// Image with root block and an internal node that is too small (< 0x0C meaningful bytes)
@@ -542,6 +542,135 @@ func TestParseDxBlockNumbersTruncatedData(t *testing.T) {
 	}
 	if got[0] != 10 || got[1] != 20 {
 		t.Errorf("expected [10, 20], got %v", got)
+	}
+}
+
+func TestDxCountLimitParsing(t *testing.T) {
+	data := make([]byte, 4)
+	binary.LittleEndian.PutUint16(data[0:], 200) // limit at offset 0
+	binary.LittleEndian.PutUint16(data[2:], 5)   // count at offset 2
+
+	var cl DxCountLimit
+	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &cl); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cl.Limit != 200 {
+		t.Errorf("Limit = %d, want 200", cl.Limit)
+	}
+	if cl.Count != 5 {
+		t.Errorf("Count = %d, want 5", cl.Count)
+	}
+}
+
+func TestListEntriesHTreeCountExceedsLimit(t *testing.T) {
+	const blockSize = 4096
+
+	totalSize := 5 * blockSize
+	image := make([]byte, totalSize)
+
+	// Build root block with count > limit (corrupted)
+	block := make([]byte, blockSize)
+	// dot entry
+	binary.LittleEndian.PutUint32(block[0x00:], 2)
+	binary.LittleEndian.PutUint16(block[0x04:], 12)
+	block[0x06] = 1
+	block[0x07] = 2
+	block[0x08] = '.'
+	// dotdot entry
+	binary.LittleEndian.PutUint32(block[0x0C:], 2)
+	binary.LittleEndian.PutUint16(block[0x10:], uint16(blockSize-12))
+	block[0x12] = 2
+	block[0x13] = 2
+	block[0x14] = '.'
+	block[0x15] = '.'
+	// dx_root_info
+	block[0x1E] = 0 // indirect_levels
+	// DxCountLimit: limit=2, count=10 (count > limit)
+	binary.LittleEndian.PutUint16(block[0x20:], 2)
+	binary.LittleEndian.PutUint16(block[0x22:], 10)
+
+	copy(image[4*blockSize:], block)
+
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 1, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2},
+		cache: &mockCache[string, any]{},
+	}
+
+	_, err := ext4fs.listEntriesHTree(rootInode)
+	if err == nil {
+		t.Fatal("expected error for count > limit, got nil")
+	}
+}
+
+func TestListEntriesHTreeIndirectLevelsTooHigh(t *testing.T) {
+	const blockSize = 4096
+
+	totalSize := 5 * blockSize
+	image := make([]byte, totalSize)
+
+	// Build root block with indirect_levels=4 (exceeds max 3)
+	rootBlock := buildHTreeRootBlock(blockSize, 4, []uint32{1})
+	copy(image[4*blockSize:], rootBlock)
+
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 1, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2},
+		cache: &mockCache[string, any]{},
+	}
+
+	_, err := ext4fs.listEntriesHTree(rootInode)
+	if err == nil {
+		t.Fatal("expected error for indirect_levels > 3, got nil")
+	}
+}
+
+func TestExtractDirectoryEntriesRecLenUnderflow(t *testing.T) {
+	// Build an entry where RecLen < NameLen + 8 (corrupted)
+	buf := make([]byte, 20)
+	binary.LittleEndian.PutUint32(buf[0:], 1) // inode
+	binary.LittleEndian.PutUint16(buf[4:], 5) // rec_len=5, but name_len=10 → 10+8=18 > 5
+	buf[6] = 10                               // name_len=10
+	buf[7] = 1                                // flags
+	copy(buf[8:], []byte("abcdefghij"))       // name (10 bytes, extends beyond rec_len)
+
+	entries, err := extractDirectoryEntries(bytes.NewBuffer(buf))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should stop parsing at corrupted entry, returning no entries
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries from corrupted RecLen, got %d", len(entries))
 	}
 }
 
