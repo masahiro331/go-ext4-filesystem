@@ -96,6 +96,85 @@ func TestGetGroupDescriptorTableCount_32bitIgnoresHi(t *testing.T) {
 	}
 }
 
+func TestGetGroupDescriptorCount(t *testing.T) {
+	tests := []struct {
+		name            string
+		blockCountLo    uint32
+		blockPerGroup   uint32
+		logBlockSize    uint32
+		featureIncompat uint32
+		want            uint32
+	}{
+		{
+			name:          "4KB blocks, 1 group: 1 block",
+			blockCountLo:  32768,
+			blockPerGroup: 32768,
+			logBlockSize:  2, // 4096
+			want:          1, // 1*32=32 bytes, ceil(32/4096)=1
+		},
+		{
+			name:          "4KB blocks, 128 groups: fits in 1 block",
+			blockCountLo:  128 * 32768,
+			blockPerGroup: 32768,
+			logBlockSize:  2,
+			want:          1, // 128*32=4096 bytes, ceil(4096/4096)=1
+		},
+		{
+			name:          "4KB blocks, 129 groups: needs 2 blocks",
+			blockCountLo:  129 * 32768,
+			blockPerGroup: 32768,
+			logBlockSize:  2,
+			want:          2, // 129*32=4128, ceil(4128/4096)=2
+		},
+		{
+			name:          "1KB blocks, 32 groups: fits in 1 block",
+			blockCountLo:  32 * 8192,
+			blockPerGroup: 8192,
+			logBlockSize:  0, // 1024
+			want:          1, // 32*32=1024, ceil(1024/1024)=1
+		},
+		{
+			name:          "1KB blocks, 33 groups: needs 2 blocks",
+			blockCountLo:  33 * 8192,
+			blockPerGroup: 8192,
+			logBlockSize:  0,
+			want:          2, // 33*32=1056, ceil(1056/1024)=2
+		},
+		{
+			name:            "64bit mode: 64-byte descriptors",
+			blockCountLo:    64 * 32768,
+			blockPerGroup:   32768,
+			logBlockSize:    2,
+			featureIncompat: FEATURE_INCOMPAT_64BIT,
+			want:            1, // 64*64=4096, ceil(4096/4096)=1
+		},
+		{
+			name:            "64bit mode: 65 groups needs 2 blocks",
+			blockCountLo:    65 * 32768,
+			blockPerGroup:   32768,
+			logBlockSize:    2,
+			featureIncompat: FEATURE_INCOMPAT_64BIT,
+			want:            2, // 65*64=4160, ceil(4160/4096)=2
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sb := &Superblock{
+				BlockCountLo:    tt.blockCountLo,
+				BlockPerGroup:   tt.blockPerGroup,
+				LogBlockSize:    tt.logBlockSize,
+				FeatureIncompat: tt.featureIncompat,
+			}
+			got := sb.GetGroupDescriptorCount()
+			if got != tt.want {
+				t.Errorf("GetGroupDescriptorCount() = %d, want %d (ngroups=%d)",
+					got, tt.want, sb.GetGroupDescriptorTableCount())
+			}
+		})
+	}
+}
+
 func TestGetGroupDescriptor_SeekOffset(t *testing.T) {
 	// buildImage places a single 32-byte GD at the given byte offset.
 	// The GD has InodeTableLo = marker so we can verify the correct offset
