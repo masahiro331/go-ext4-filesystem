@@ -97,16 +97,18 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	index := (inodeAddress - 1) % int64(ext4.sb.InodePerGroup)
 	physicalOffset := bgd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
 
-	// offset need to 512*N offset
-	inodeOffset := physicalOffset % SectorSize
-	seekOffset := physicalOffset - (physicalOffset % SectorSize)
-	buf := make([]byte, SectorSize)
-	_, err := ext4.r.ReadAt(buf, seekOffset)
+	inodeStructSize := int64(binary.Size(Inode{}))
+	buf := make([]byte, inodeStructSize)
+
+	// Read only the on-disk inode size; for ext2/ext3 (InodeSize=128)
+	// the remaining bytes stay zero, giving safe defaults for extended fields.
+	readSize := inodeStructSize
+	if int64(ext4.sb.InodeSize) < readSize {
+		readSize = int64(ext4.sb.InodeSize)
+	}
+	_, err := ext4.r.ReadAt(buf[:readSize], physicalOffset)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to read inode: %w", err)
-	}
-	if inodeOffset != 0 && int64(len(buf)) > inodeOffset {
-		buf = buf[inodeOffset:]
 	}
 
 	inode := Inode{}

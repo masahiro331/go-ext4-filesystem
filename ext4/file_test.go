@@ -2,7 +2,6 @@ package ext4
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io"
 	"testing"
 )
@@ -12,13 +11,7 @@ import (
 func newTestFile(image []byte, blockSize int64, fileSize int64, table dataTable) *File {
 	r := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
 	fs := &FileSystem{r: r}
-	inode := &Inode{}
-	binary.LittleEndian.PutUint32(
-		(*[4]byte)(inode.BlockOrExtents[40:44])[:],
-		uint32(fileSize),
-	)
-	// Set SizeLo directly
-	inode.SizeLo = uint32(fileSize)
+	inode := &Inode{SizeLo: uint32(fileSize)}
 
 	return &File{
 		FileInfo: FileInfo{
