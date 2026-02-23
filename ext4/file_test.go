@@ -2,6 +2,7 @@ package ext4
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 )
@@ -148,6 +149,82 @@ func TestFileRead_AllSparse(t *testing.T) {
 	for i, b := range data {
 		if b != 0 {
 			t.Fatalf("byte %d: got %#x, want 0", i, b)
+		}
+	}
+}
+
+// TestFileRead_UninitializedExtentReadsZeros verifies that file() skips
+// uninitialized extents, and Read() returns zeros for those blocks via the
+// sparse path.
+func TestFileRead_UninitializedExtentReadsZeros(t *testing.T) {
+	const blockSize = 4096
+	// 4 blocks total: block 0-1 initialized, block 2-3 uninitialized
+	const fileSize = blockSize * 4
+
+	// Build image: 4 blocks of disk data.
+	// Blocks at physical position 0-1 contain 0xAA (will be mapped to logical 0-1).
+	// Blocks at physical position 2-3 contain 0xBB (uninitialized extent points here,
+	// but these should NOT be read).
+	image := make([]byte, blockSize*4)
+	for i := 0; i < blockSize*2; i++ {
+		image[i] = 0xAA
+	}
+	for i := blockSize * 2; i < blockSize*4; i++ {
+		image[i] = 0xBB
+	}
+
+	r := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+
+	// Build inode with extent tree in BlockOrExtents:
+	// ExtentHeader (depth=0, 2 entries) + 2 Extents
+	var extData [60]byte
+	buf := bytes.NewBuffer(extData[:0])
+	binary.Write(buf, binary.LittleEndian, ExtentHeader{
+		Magic: 0xF30A, Entries: 2, Max: 4, Depth: 0,
+	})
+	// Extent 1: blocks 0-1, initialized, physical block 0
+	binary.Write(buf, binary.LittleEndian, Extent{
+		Block: 0, Len: 2, StartHi: 0, StartLo: 0,
+	})
+	// Extent 2: blocks 2-3, uninitialized (bit 15 set), physical block 2
+	binary.Write(buf, binary.LittleEndian, Extent{
+		Block: 2, Len: 0x8002, StartHi: 0, StartLo: 2,
+	})
+	copy(extData[:], buf.Bytes())
+
+	inode := &Inode{
+		SizeLo: fileSize,
+		Flags:  EXTENTS_FL,
+	}
+	copy(inode.BlockOrExtents[:], extData[:])
+
+	fs := &FileSystem{
+		r:  r,
+		sb: Superblock{LogBlockSize: 2}, // 4096
+	}
+
+	fi := FileInfo{name: "test", inode: inode}
+	f, err := fs.file(fi, "test")
+	if err != nil {
+		t.Fatalf("file() error: %v", err)
+	}
+
+	data := readAll(t, f)
+	if int64(len(data)) != fileSize {
+		t.Fatalf("read %d bytes, want %d", len(data), fileSize)
+	}
+
+	// Blocks 0-1: should be 0xAA (initialized extent)
+	for i := 0; i < blockSize*2; i++ {
+		if data[i] != 0xAA {
+			t.Fatalf("byte %d (initialized): got %#x, want 0xAA", i, data[i])
+		}
+	}
+
+	// Blocks 2-3: should be 0x00 (uninitialized extent → zeros, NOT 0xBB)
+	for i := blockSize * 2; i < fileSize; i++ {
+		if data[i] != 0 {
+			t.Fatalf("byte %d (uninitialized): got %#x, want 0x00", i, data[i])
 		}
 	}
 }

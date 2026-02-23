@@ -24,6 +24,18 @@ type Extent struct {
 	StartLo uint32 `struc:"uint32,little"`
 }
 
+// IsUninitialized returns true if this extent is unwritten (allocated but
+// not yet written). Reads from such extents should return zeros.
+func (e *Extent) IsUninitialized() bool {
+	return e.Len > 0x7FFF
+}
+
+// GetLen returns the actual number of blocks, masking off the
+// uninitialized flag in bit 15.
+func (e *Extent) GetLen() uint16 {
+	return e.Len & 0x7FFF
+}
+
 // DirectoryEntry2 is more or less a flat file that maps an arbitrary byte string
 type DirectoryEntry2 struct {
 	Inode   uint32 `struc:"uint32,little"`

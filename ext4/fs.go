@@ -236,7 +236,7 @@ func (ext4 *FileSystem) buildDirectoryBlockMap(inode *Inode) (map[uint32]int64, 
 			return nil, xerrors.Errorf("failed to get extents: %w", err)
 		}
 		for _, e := range extents {
-			for i := uint32(0); i < uint32(e.Len); i++ {
+			for i := uint32(0); i < uint32(e.GetLen()); i++ {
 				m[e.Block+i] = (e.offset() + int64(i)) * blockSize
 			}
 		}
@@ -458,7 +458,7 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	blockSize := ext4.sb.GetBlockSize()
 	var entries []DirectoryEntry2
 	for _, e := range extents {
-		size := blockSize * int64(e.Len)
+		size := blockSize * int64(e.GetLen())
 		buf := make([]byte, size)
 		_, err := ext4.r.ReadAt(buf, e.offset()*blockSize)
 		if err != nil {
@@ -598,8 +598,13 @@ func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
 
 	dt := make(dataTable)
 	for _, e := range extents {
+		// Uninitialized (unwritten) extents should read as zeros;
+		// omitting them from the table delegates to the sparse path in Read().
+		if e.IsUninitialized() {
+			continue
+		}
 		offset := e.offset() * ext4.sb.GetBlockSize()
-		for i := int64(0); i < int64(e.Len); i++ {
+		for i := int64(0); i < int64(e.GetLen()); i++ {
 			dt[int64(e.Block)+i] = offset + i*ext4.sb.GetBlockSize()
 		}
 	}

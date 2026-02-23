@@ -79,6 +79,34 @@ func TestInodeFileType(t *testing.T) {
 	}
 }
 
+func TestExtent_IsUninitialized(t *testing.T) {
+	tests := []struct {
+		name   string
+		len    uint16
+		wantUn bool
+		wantN  uint16
+	}{
+		{"initialized: 1 block", 1, false, 1},
+		{"initialized: max (0x7FFF)", 0x7FFF, false, 0x7FFF},
+		{"uninitialized: 1 block (0x8001)", 0x8001, true, 1},
+		{"uninitialized: max (0xFFFF)", 0xFFFF, true, 0x7FFF},
+		{"zero length", 0, false, 0},
+		{"exactly 0x8000 (uninitialized, 0 blocks)", 0x8000, true, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := Extent{Len: tt.len}
+			if got := e.IsUninitialized(); got != tt.wantUn {
+				t.Errorf("IsUninitialized() = %v, want %v", got, tt.wantUn)
+			}
+			if got := e.GetLen(); got != tt.wantN {
+				t.Errorf("GetLen() = %d, want %d", got, tt.wantN)
+			}
+		})
+	}
+}
+
 func TestInodeFileTypeMutualExclusion(t *testing.T) {
 	modes := []struct {
 		name string
