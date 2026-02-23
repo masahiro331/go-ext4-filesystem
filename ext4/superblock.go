@@ -210,7 +210,8 @@ func (sb *Superblock) GetBlockCount() int64 {
 }
 
 func (sb *Superblock) GetGroupDescriptorTableCount() uint32 {
-	return (sb.BlockCountHi<<32|sb.BlockCountLo)/sb.BlockPerGroup + 1
+	blockCount := sb.GetBlockCount() - int64(sb.FirstDataBlock)
+	return uint32((blockCount + int64(sb.BlockPerGroup) - 1) / int64(sb.BlockPerGroup))
 }
 
 func (sb *Superblock) GetGroupDescriptorCount() uint32 {
