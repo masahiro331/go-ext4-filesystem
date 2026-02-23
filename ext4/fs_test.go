@@ -66,10 +66,11 @@ func TestExtractDirectoryEntriesSkipsDotEntries(t *testing.T) {
 	}
 }
 
-func TestExtractDirectoryEntriesSkipsChecksum(t *testing.T) {
+func TestExtractDirectoryEntriesSkipsChecksumTail(t *testing.T) {
+	// Checksum tail entries have inode=0 and file_type=0xDE; skipped by inode==0 guard
 	var data []byte
 	data = append(data, buildDirEntry(5, "keep", 1)...)
-	data = append(data, buildDirEntry(6, "csum", 0xDE)...)
+	data = append(data, buildDirEntry(0, "csum", 0xDE)...)
 
 	entries, err := extractDirectoryEntries(bytes.NewBuffer(data))
 	if err != nil {

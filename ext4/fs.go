@@ -216,9 +216,6 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 		if dirEntry.Name == "." || dirEntry.Name == ".." {
 			continue
 		}
-		if dirEntry.Flags == 0xDE {
-			continue
-		}
 
 		dirEntries = append(dirEntries, dirEntry)
 	}
