@@ -370,8 +370,12 @@ func (ext4 *FileSystem) listEntriesHTree(inode *Inode) ([]DirectoryEntry2, error
 	if err := binary.Read(bytes.NewReader(rootData[0x18:0x20]), binary.LittleEndian, &rootInfo); err != nil {
 		return nil, xerrors.Errorf("failed to parse dx_root_info: %w", err)
 	}
-	if rootInfo.IndirectLevels > 3 {
-		return nil, xerrors.Errorf("htree indirect_levels (%d) exceeds maximum (3)", rootInfo.IndirectLevels)
+	maxLevels := uint8(2)
+	if ext4.sb.FeatureIncompatLargedir() {
+		maxLevels = 3
+	}
+	if rootInfo.IndirectLevels > maxLevels {
+		return nil, xerrors.Errorf("htree indirect_levels (%d) exceeds maximum (%d)", rootInfo.IndirectLevels, maxLevels)
 	}
 
 	var cl DxCountLimit

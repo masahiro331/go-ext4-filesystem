@@ -455,7 +455,6 @@ func TestListEntriesHTreeRootBlockReadFailure(t *testing.T) {
 func TestCollectLeafBlocksInternalNodeCountZero(t *testing.T) {
 	const blockSize = 4096
 
-	// Image with root block and an internal node that is too small (< 0x0C meaningful bytes)
 	totalSize := 6 * blockSize
 	image := make([]byte, totalSize)
 
@@ -463,12 +462,8 @@ func TestCollectLeafBlocksInternalNodeCountZero(t *testing.T) {
 	rootBlock := buildHTreeRootBlock(blockSize, 1, []uint32{1})
 	copy(image[4*blockSize:], rootBlock)
 
-	// Internal node at physical block 5 (logical block 1): fill with zeros (too small / invalid)
-	// All zeros means the fake dirent and DxCountLimit are zero.
-	// This is a valid parse but count=0, so no child blocks. Not an error per se.
-	// To trigger the "too small" error, we need len(data) < 0x0C, but readLogicalBlock
-	// always returns blockSize bytes. So this path can only fail if ReadAt fails.
-	// Let's instead test that count=0 in internal node returns no entries gracefully.
+	// Internal node at physical block 5 (logical block 1): all zeros.
+	// DxCountLimit.Count=0, so no child blocks are returned.
 
 	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
 	ext4fs := &FileSystem{
@@ -618,41 +613,84 @@ func TestListEntriesHTreeCountExceedsLimit(t *testing.T) {
 	}
 }
 
-func TestListEntriesHTreeIndirectLevelsTooHigh(t *testing.T) {
+func TestListEntriesHTreeInternalNodeCountExceedsLimit(t *testing.T) {
 	const blockSize = 4096
 
-	totalSize := 5 * blockSize
+	// Root (indirect_levels=1) -> internal node with count > limit
+	totalSize := 6 * blockSize
 	image := make([]byte, totalSize)
 
-	// Build root block with indirect_levels=4 (exceeds max 3)
-	rootBlock := buildHTreeRootBlock(blockSize, 4, []uint32{1})
+	rootBlock := buildHTreeRootBlock(blockSize, 1, []uint32{1})
 	copy(image[4*blockSize:], rootBlock)
 
-	rootInode := &Inode{
-		Mode:   0x4000 | 0755,
-		Flags:  INDEX_FL | EXTENTS_FL,
-		SizeLo: uint32(blockSize),
-	}
+	// Internal node at physical block 5: limit=2, count=10 (corrupted)
+	node := make([]byte, blockSize)
+	binary.LittleEndian.PutUint32(node[0x00:], 0)
+	binary.LittleEndian.PutUint16(node[0x04:], uint16(blockSize))
+	binary.LittleEndian.PutUint16(node[0x08:], 2)  // limit
+	binary.LittleEndian.PutUint16(node[0x0A:], 10) // count > limit
+	copy(image[5*blockSize:], node)
+
+	rootInode := &Inode{Mode: 0x4000 | 0755, Flags: INDEX_FL | EXTENTS_FL, SizeLo: 2 * uint32(blockSize)}
 	var extBuf bytes.Buffer
-	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
-		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
-	})
-	binary.Write(&extBuf, binary.LittleEndian, &Extent{
-		Block: 0, Len: 1, StartHi: 0, StartLo: 4,
-	})
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{Block: 0, Len: 2, StartHi: 0, StartLo: 4})
 	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
 
 	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
-	ext4fs := &FileSystem{
-		r:     sr,
-		sb:    Superblock{LogBlockSize: 2},
-		cache: &mockCache[string, any]{},
-	}
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
 
 	_, err := ext4fs.listEntriesHTree(rootInode)
 	if err == nil {
-		t.Fatal("expected error for indirect_levels > 3, got nil")
+		t.Fatal("expected error for internal node count > limit, got nil")
 	}
+}
+
+func TestListEntriesHTreeIndirectLevelsTooHigh(t *testing.T) {
+	const blockSize = 4096
+
+	// Without LARGEDIR: max is 2, so levels=3 should be rejected
+	t.Run("without LARGEDIR", func(t *testing.T) {
+		totalSize := 5 * blockSize
+		image := make([]byte, totalSize)
+		copy(image[4*blockSize:], buildHTreeRootBlock(blockSize, 3, []uint32{1}))
+
+		rootInode := &Inode{Mode: 0x4000 | 0755, Flags: INDEX_FL | EXTENTS_FL, SizeLo: uint32(blockSize)}
+		var extBuf bytes.Buffer
+		binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0})
+		binary.Write(&extBuf, binary.LittleEndian, &Extent{Block: 0, Len: 1, StartHi: 0, StartLo: 4})
+		copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+		sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+		ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+		_, err := ext4fs.listEntriesHTree(rootInode)
+		if err == nil {
+			t.Fatal("expected error for indirect_levels=3 without LARGEDIR")
+		}
+	})
+
+	// With LARGEDIR: max is 3, so levels=4 should be rejected
+	t.Run("with LARGEDIR", func(t *testing.T) {
+		totalSize := 5 * blockSize
+		image := make([]byte, totalSize)
+		copy(image[4*blockSize:], buildHTreeRootBlock(blockSize, 4, []uint32{1}))
+
+		rootInode := &Inode{Mode: 0x4000 | 0755, Flags: INDEX_FL | EXTENTS_FL, SizeLo: uint32(blockSize)}
+		var extBuf bytes.Buffer
+		binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0})
+		binary.Write(&extBuf, binary.LittleEndian, &Extent{Block: 0, Len: 1, StartHi: 0, StartLo: 4})
+		copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+		sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+		sb := Superblock{LogBlockSize: 2, FeatureIncompat: FEATURE_INCOMPAT_LARGEDIR}
+		ext4fs := &FileSystem{r: sr, sb: sb, cache: &mockCache[string, any]{}}
+
+		_, err := ext4fs.listEntriesHTree(rootInode)
+		if err == nil {
+			t.Fatal("expected error for indirect_levels=4 with LARGEDIR")
+		}
+	})
 }
 
 func TestExtractDirectoryEntriesRecLenUnderflow(t *testing.T) {
