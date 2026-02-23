@@ -65,7 +65,7 @@ func NewFS(r io.SectionReader, cache Cache[string, any]) (*FileSystem, error) {
 		return nil, xerrors.Errorf("failed to parse super block: %w", err)
 	}
 
-	numBlockGroups := (sb.GetBlockCount() + int64(sb.BlockPerGroup) - 1) / int64(sb.BlockPerGroup)
+	numBlockGroups := int64(sb.GetGroupDescriptorTableCount())
 	numBlockGroups2 := (sb.InodeCount + sb.InodePerGroup - 1) / sb.InodePerGroup
 	if numBlockGroups != int64(numBlockGroups2) {
 		return nil, xerrors.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)

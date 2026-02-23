@@ -41,7 +41,7 @@ func (ext4 *FileSystem) Extents(inode *Inode) ([]Extent, error) {
 }
 
 func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, error) {
-	_, err := r.Seek(sb.GetBlockSize(), 0)
+	_, err := r.Seek(int64(sb.FirstDataBlock+1)*sb.GetBlockSize(), 0)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to seek Group Descriptor offset: %w", err)
 	}
