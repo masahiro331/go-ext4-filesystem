@@ -106,13 +106,12 @@ func (f *File) Read(p []byte) (n int, err error) {
 
 	offset, ok := f.table[f.currentBlock]
 	if !ok {
-		// blockSize: 512
-		// size: 2000
-		// 2000 - 512 * 3 = 464 < 512
-		if f.Size()-f.blockSize*f.currentBlock < f.blockSize {
-			f.buffer.Write(make([]byte, f.Size()-f.blockSize*f.currentBlock))
+		remaining := f.Size() - f.blockSize*f.currentBlock
+		if remaining < f.blockSize {
+			f.buffer.Write(make([]byte, remaining))
+		} else {
+			f.buffer.Write(make([]byte, f.blockSize))
 		}
-		f.buffer.Write(make([]byte, f.blockSize))
 	} else {
 		_, err := f.fs.r.Seek(offset, io.SeekStart)
 		if err != nil {
