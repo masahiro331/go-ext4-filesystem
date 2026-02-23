@@ -66,11 +66,10 @@ func TestExtractDirectoryEntriesSkipsDotEntries(t *testing.T) {
 	}
 }
 
-func TestExtractDirectoryEntriesSkipsDeletedChecksum(t *testing.T) {
+func TestExtractDirectoryEntriesSkipsChecksum(t *testing.T) {
 	var data []byte
 	data = append(data, buildDirEntry(5, "keep", 1)...)
 	data = append(data, buildDirEntry(6, "csum", 0xDE)...)
-	data = append(data, buildDirEntry(7, "notype", 0)...)
 
 	entries, err := extractDirectoryEntries(bytes.NewBuffer(data))
 	if err != nil {
@@ -82,6 +81,28 @@ func TestExtractDirectoryEntriesSkipsDeletedChecksum(t *testing.T) {
 	}
 	if entries[0].Name != "keep" {
 		t.Errorf("expected 'keep', got %q", entries[0].Name)
+	}
+}
+
+func TestExtractDirectoryEntriesKeepsUnknownFileType(t *testing.T) {
+	// file_type=0 (EXT4_FT_UNKNOWN) is valid on filesystems without FEATURE_INCOMPAT_FILETYPE
+	var data []byte
+	data = append(data, buildDirEntry(5, "known", 1)...)
+	data = append(data, buildDirEntry(7, "unknown_type", 0)...)
+
+	entries, err := extractDirectoryEntries(bytes.NewBuffer(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Name != "known" {
+		t.Errorf("expected 'known', got %q", entries[0].Name)
+	}
+	if entries[1].Name != "unknown_type" {
+		t.Errorf("expected 'unknown_type', got %q", entries[1].Name)
 	}
 }
 
