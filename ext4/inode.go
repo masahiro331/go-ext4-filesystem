@@ -247,6 +247,24 @@ func (i *Inode) GetBlockAddresses(ext4 *FileSystem) ([]uint32, error) {
 	return blockAddresses, nil
 }
 
+// DxRootInfo holds the hash tree root metadata, located at offset 0x18 in the
+// root directory block (immediately after the dot and dotdot fake dirents).
+type DxRootInfo struct {
+	ReservedZero   uint32 `struc:"uint32,little"`
+	HashVersion    uint8  `struc:"uint8"`
+	InfoLength     uint8  `struc:"uint8"`
+	IndirectLevels uint8  `struc:"uint8"`
+	UnusedFlags    uint8  `struc:"uint8"`
+}
+
+// DxCountLimit is the count/limit header at the start of a dx_entry array.
+// It reinterprets the first dx_entry: the first 2 bytes are limit, the next 2
+// are count, followed by the block number for the leftmost subtree.
+type DxCountLimit struct {
+	Limit uint16 `struc:"uint16,little"`
+	Count uint16 `struc:"uint16,little"`
+}
+
 // ExtentInternal
 type ExtentInternal struct {
 	Block    uint32 `struc:"uint32,little"`
