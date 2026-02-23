@@ -210,6 +210,7 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 			return nil, xerrors.Errorf("failed to read align: %w", err)
 		}
 
+		// inode == 0 means the entry is unused (deleted or padding such as checksum tail).
 		if dirEntry.Inode == 0 {
 			continue
 		}
