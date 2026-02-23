@@ -347,7 +347,7 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		if !ok {
 			return nil, xerrors.Errorf("unspecified error, entry is not dir entry %+v", entry)
 		}
-		if dir.inode.Mode&0xA000 == 0xA000 {
+		if dir.inode.IsSymlink() {
 			return nil, ErrOpenSymlink
 		}
 

@@ -81,19 +81,31 @@ type BlockAddressing struct {
 }
 
 func (i Inode) IsDir() bool {
-	return i.Mode&0x4000 != 0 && i.Mode&0x8000 == 0
+	return i.Mode&0xF000 == 0x4000
 }
 
 func (i Inode) IsRegular() bool {
-	return i.Mode&0x8000 != 0 && i.Mode&0x4000 == 0
+	return i.Mode&0xF000 == 0x8000
 }
 
 func (i Inode) IsSocket() bool {
-	return i.Mode&0xC000 != 0
+	return i.Mode&0xF000 == 0xC000
 }
 
 func (i Inode) IsSymlink() bool {
-	return i.Mode&0xA000 != 0
+	return i.Mode&0xF000 == 0xA000
+}
+
+func (i Inode) IsFifo() bool {
+	return i.Mode&0xF000 == 0x1000
+}
+
+func (i Inode) IsCharDevice() bool {
+	return i.Mode&0xF000 == 0x2000
+}
+
+func (i Inode) IsBlockDevice() bool {
+	return i.Mode&0xF000 == 0x6000
 }
 
 // UsesExtents
