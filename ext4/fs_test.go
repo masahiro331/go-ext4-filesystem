@@ -968,6 +968,56 @@ func TestBuildDirectoryBlockMapSkipsZero(t *testing.T) {
 	}
 }
 
+func TestBuildDirectoryBlockMapExtents(t *testing.T) {
+	const blockSize = 4096
+
+	// Inode with EXTENTS_FL: two extents
+	// Extent 1: logical blocks 0-1 at physical blocks 10-11
+	// Extent 2: logical block 2 at physical block 20
+	inode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  EXTENTS_FL,
+		SizeLo: 3 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 2, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 2, StartHi: 0, StartLo: 10,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 2, Len: 1, StartHi: 0, StartLo: 20,
+	})
+	copy(inode.BlockOrExtents[:], extBuf.Bytes())
+
+	image := make([]byte, 25*blockSize)
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	m, err := ext4fs.buildDirectoryBlockMap(inode)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Logical block 0 -> physical block 10 -> offset 10*4096
+	if offset, ok := m[0]; !ok || offset != 10*blockSize {
+		t.Errorf("block 0: got offset=%d ok=%v, want %d", offset, ok, 10*blockSize)
+	}
+	// Logical block 1 -> physical block 11 -> offset 11*4096
+	if offset, ok := m[1]; !ok || offset != 11*blockSize {
+		t.Errorf("block 1: got offset=%d ok=%v, want %d", offset, ok, 11*blockSize)
+	}
+	// Logical block 2 -> physical block 20 -> offset 20*4096
+	if offset, ok := m[2]; !ok || offset != 20*blockSize {
+		t.Errorf("block 2: got offset=%d ok=%v, want %d", offset, ok, 20*blockSize)
+	}
+
+	if len(m) != 3 {
+		t.Errorf("expected 3 entries in block map, got %d", len(m))
+	}
+}
+
 // --- fileFromBlock zero-skip test ---
 
 func TestFileFromBlockSkipsZeroAddresses(t *testing.T) {
