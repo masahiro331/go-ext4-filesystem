@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -1018,6 +1019,41 @@ func TestBuildDirectoryBlockMapExtents(t *testing.T) {
 	}
 }
 
+func TestBuildDirectoryBlockMapRejectsUninitializedExtent(t *testing.T) {
+	const blockSize = 4096
+
+	inode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  EXTENTS_FL,
+		SizeLo: 2 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 2, Max: 4, Depth: 0,
+	})
+	// Extent 1: initialized
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 1, StartHi: 0, StartLo: 10,
+	})
+	// Extent 2: uninitialized (bit 15 set)
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 1, Len: 0x8001, StartHi: 0, StartLo: 20,
+	})
+	copy(inode.BlockOrExtents[:], extBuf.Bytes())
+
+	image := make([]byte, 25*blockSize)
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	_, err := ext4fs.buildDirectoryBlockMap(inode)
+	if err == nil {
+		t.Fatal("expected error for uninitialized extent in directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to build directory block map: uninitialized extent") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
 // --- fileFromBlock zero-skip test ---
 
 func TestFileFromBlockSkipsZeroAddresses(t *testing.T) {
@@ -1245,6 +1281,50 @@ func TestListEntriesExtentReadAt(t *testing.T) {
 		if !names[expected] {
 			t.Errorf("expected %q in entries", expected)
 		}
+	}
+}
+
+func TestListEntriesExtentRejectsUninitializedExtent(t *testing.T) {
+	const blockSize = 4096
+
+	totalSize := 6 * blockSize
+	image := make([]byte, totalSize)
+
+	// Build root inode (inode 2) with an uninitialized extent
+	rootInode := Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  EXTENTS_FL,
+		SizeLo: uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 0x8001, StartHi: 0, StartLo: 4, // uninitialized
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	var inodeBuf bytes.Buffer
+	binary.Write(&inodeBuf, binary.LittleEndian, &rootInode)
+	copy(image[2*blockSize+256:], inodeBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:  sr,
+		sb: Superblock{LogBlockSize: 2, InodePerGroup: 64, InodeSize: 256},
+		gds: []GroupDescriptor{
+			{GroupDescriptor32: GroupDescriptor32{InodeTableLo: 2}},
+		},
+		cache: &mockCache[string, any]{},
+	}
+
+	_, err := ext4fs.listEntries(rootInodeNumber)
+	if err == nil {
+		t.Fatal("expected error for uninitialized extent in directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to list directory entries: uninitialized extent") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 

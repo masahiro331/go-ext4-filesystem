@@ -236,6 +236,9 @@ func (ext4 *FileSystem) buildDirectoryBlockMap(inode *Inode) (map[uint32]int64, 
 			return nil, xerrors.Errorf("failed to get extents: %w", err)
 		}
 		for _, e := range extents {
+			if e.IsUninitialized() {
+				return nil, xerrors.Errorf("failed to build directory block map: uninitialized extent at logical block %d", e.Block)
+			}
 			for i := uint32(0); i < uint32(e.GetLen()); i++ {
 				m[e.Block+i] = (e.offset() + int64(i)) * blockSize
 			}
@@ -458,6 +461,9 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	blockSize := ext4.sb.GetBlockSize()
 	var entries []DirectoryEntry2
 	for _, e := range extents {
+		if e.IsUninitialized() {
+			return nil, xerrors.Errorf("failed to list directory entries: uninitialized extent at logical block %d", e.Block)
+		}
 		size := blockSize * int64(e.GetLen())
 		buf := make([]byte, size)
 		_, err := ext4.r.ReadAt(buf, e.offset()*blockSize)
