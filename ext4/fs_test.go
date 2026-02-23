@@ -1048,6 +1048,77 @@ func TestFileFromBlockSkipsZeroAddresses(t *testing.T) {
 	}
 }
 
+// --- File.Read partial last block test ---
+
+func TestFileReadPartialLastBlock(t *testing.T) {
+	const blockSize = 4096
+	// File size = 1.5 blocks = 6144 bytes
+	fileSize := int64(blockSize + blockSize/2)
+
+	image := make([]byte, 16*blockSize)
+
+	// Write known data to physical block 10 (full block: 0xAA)
+	for i := 0; i < blockSize; i++ {
+		image[10*blockSize+i] = 0xAA
+	}
+	// Write known data to physical block 11 (full block: 0xBB, but only half should be read)
+	for i := 0; i < blockSize; i++ {
+		image[11*blockSize+i] = 0xBB
+	}
+
+	directBlocks := [12]uint32{10, 11}
+	inode := buildBlockAddressingInode(directBlocks, 0, 0, 0, fileSize)
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	fi := FileInfo{
+		name:  "partial.bin",
+		inode: inode,
+		mode:  fs.FileMode(inode.Mode),
+	}
+	f, err := ext4fs.fileFromBlock(fi, "partial.bin")
+	if err != nil {
+		t.Fatalf("fileFromBlock failed: %v", err)
+	}
+
+	// Read entire file
+	var all []byte
+	buf := make([]byte, 1024)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			all = append(all, buf[:n]...)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read failed: %v", err)
+		}
+	}
+
+	if int64(len(all)) != fileSize {
+		t.Fatalf("total bytes read = %d, want %d", len(all), fileSize)
+	}
+
+	// First block should be 0xAA
+	for i := 0; i < blockSize; i++ {
+		if all[i] != 0xAA {
+			t.Errorf("byte[%d] = %#x, want 0xAA", i, all[i])
+			break
+		}
+	}
+
+	// Second block (partial) should be 0xBB for exactly blockSize/2 bytes
+	for i := blockSize; i < int(fileSize); i++ {
+		if all[i] != 0xBB {
+			t.Errorf("byte[%d] = %#x, want 0xBB", i, all[i])
+			break
+		}
+	}
+}
+
 // --- listEntries non-HTree extent path ---
 
 func TestListEntriesExtentReadAt(t *testing.T) {
