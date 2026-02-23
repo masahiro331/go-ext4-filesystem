@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"io/fs"
 	"testing"
 )
 
@@ -793,5 +794,329 @@ func TestListEntriesDispatchesToHTree(t *testing.T) {
 	}
 	if entries[0].Name != "dispatched" {
 		t.Errorf("expected 'dispatched', got %q", entries[0].Name)
+	}
+}
+
+// --- GetBlockAddresses sparse tests ---
+
+// buildBlockAddressingInode creates an Inode with block addressing (no EXTENTS_FL)
+// and the given file size.
+func buildBlockAddressingInode(directBlocks [12]uint32, singleIndirect, doubleIndirect, tripleIndirect uint32, fileSize int64) *Inode {
+	inode := &Inode{
+		Mode:   0x8000 | 0644,
+		SizeLo: uint32(fileSize),
+		SizeHigh: uint32(fileSize >> 32),
+	}
+	ba := BlockAddressing{
+		DirectBlock:         directBlocks,
+		SingleIndirectBlock: singleIndirect,
+		DoubleIndirectBlock: doubleIndirect,
+		TripleIndirectBlock: tripleIndirect,
+	}
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, &ba)
+	copy(inode.BlockOrExtents[:], buf.Bytes())
+	return inode
+}
+
+func TestGetBlockAddressesSparseDirectBlocks(t *testing.T) {
+	const blockSize = 4096
+
+	// Direct blocks: [5, 0, 7] — block 1 is a hole
+	directBlocks := [12]uint32{5, 0, 7}
+	inode := buildBlockAddressingInode(directBlocks, 0, 0, 0, 3*blockSize)
+
+	image := make([]byte, 8*blockSize)
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	addrs, err := inode.GetBlockAddresses(ext4fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(addrs) != 3 {
+		t.Fatalf("expected 3 addresses, got %d", len(addrs))
+	}
+	if addrs[0] != 5 {
+		t.Errorf("addrs[0] = %d, want 5", addrs[0])
+	}
+	if addrs[1] != 0 {
+		t.Errorf("addrs[1] = %d, want 0 (hole)", addrs[1])
+	}
+	if addrs[2] != 7 {
+		t.Errorf("addrs[2] = %d, want 7", addrs[2])
+	}
+}
+
+func TestGetBlockAddressesSparseIndirectBlock(t *testing.T) {
+	const blockSize = 4096
+
+	// 12 direct blocks + 3 blocks via single indirect (with a hole at index 1)
+	totalBlocks := int64(15)
+	image := make([]byte, 20*blockSize)
+
+	// Single indirect block at physical block 16
+	// Contains: [100, 0, 200] — middle entry is a hole
+	indirectBlock := make([]byte, blockSize)
+	binary.LittleEndian.PutUint32(indirectBlock[0:], 100)
+	binary.LittleEndian.PutUint32(indirectBlock[4:], 0)   // hole
+	binary.LittleEndian.PutUint32(indirectBlock[8:], 200)
+	copy(image[16*blockSize:], indirectBlock)
+
+	directBlocks := [12]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	inode := buildBlockAddressingInode(directBlocks, 16, 0, 0, totalBlocks*blockSize)
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	addrs, err := inode.GetBlockAddresses(ext4fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if int64(len(addrs)) != totalBlocks {
+		t.Fatalf("expected %d addresses, got %d", totalBlocks, len(addrs))
+	}
+
+	// Check direct blocks [0-11]
+	for i := 0; i < 12; i++ {
+		if addrs[i] != uint32(i+1) {
+			t.Errorf("addrs[%d] = %d, want %d", i, addrs[i], i+1)
+		}
+	}
+	// Check indirect blocks [12-14]
+	if addrs[12] != 100 {
+		t.Errorf("addrs[12] = %d, want 100", addrs[12])
+	}
+	if addrs[13] != 0 {
+		t.Errorf("addrs[13] = %d, want 0 (hole)", addrs[13])
+	}
+	if addrs[14] != 200 {
+		t.Errorf("addrs[14] = %d, want 200", addrs[14])
+	}
+}
+
+func TestGetBlockAddressesNullIndirectPointers(t *testing.T) {
+	const blockSize = 4096
+
+	// 14 blocks total: 12 direct + 2 more needed, but SingleIndirectBlock=0 (null pointer).
+	// The null pointer path should emit zeros for the remaining 2 blocks.
+	totalBlocks := int64(14)
+	directBlocks := [12]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	inode := buildBlockAddressingInode(directBlocks, 0, 0, 0, totalBlocks*blockSize)
+
+	image := make([]byte, blockSize)
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	addrs, err := inode.GetBlockAddresses(ext4fs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if int64(len(addrs)) != totalBlocks {
+		t.Fatalf("expected %d addresses, got %d", totalBlocks, len(addrs))
+	}
+
+	// Direct blocks [0-11] should have real addresses
+	for i := 0; i < 12; i++ {
+		if addrs[i] != uint32(i+1) {
+			t.Errorf("addrs[%d] = %d, want %d", i, addrs[i], i+1)
+		}
+	}
+	// Blocks [12-13] should be zero (null indirect pointer)
+	if addrs[12] != 0 {
+		t.Errorf("addrs[12] = %d, want 0 (null indirect pointer)", addrs[12])
+	}
+	if addrs[13] != 0 {
+		t.Errorf("addrs[13] = %d, want 0 (null indirect pointer)", addrs[13])
+	}
+}
+
+// --- buildDirectoryBlockMap zero-skip test ---
+
+func TestBuildDirectoryBlockMapSkipsZero(t *testing.T) {
+	const blockSize = 4096
+
+	// Direct blocks: [4, 0, 6] — block 1 is a hole
+	directBlocks := [12]uint32{4, 0, 6}
+	inode := buildBlockAddressingInode(directBlocks, 0, 0, 0, 3*blockSize)
+	// Override mode to directory
+	inode.Mode = 0x4000 | 0755
+
+	image := make([]byte, 8*blockSize)
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	m, err := ext4fs.buildDirectoryBlockMap(inode)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Block 0 -> offset 4*4096
+	if offset, ok := m[0]; !ok || offset != 4*blockSize {
+		t.Errorf("block 0: got offset=%d ok=%v, want %d", offset, ok, 4*blockSize)
+	}
+	// Block 1 should NOT be in the map (hole)
+	if _, ok := m[1]; ok {
+		t.Errorf("block 1 should not be in map (hole)")
+	}
+	// Block 2 -> offset 6*4096
+	if offset, ok := m[2]; !ok || offset != 6*blockSize {
+		t.Errorf("block 2: got offset=%d ok=%v, want %d", offset, ok, 6*blockSize)
+	}
+}
+
+// --- fileFromBlock zero-skip test ---
+
+func TestFileFromBlockSkipsZeroAddresses(t *testing.T) {
+	const blockSize = 4096
+
+	// 3 blocks: [10, 0, 12] — block 1 is a hole
+	directBlocks := [12]uint32{10, 0, 12}
+	inode := buildBlockAddressingInode(directBlocks, 0, 0, 0, 3*blockSize)
+
+	image := make([]byte, 16*blockSize)
+
+	// Write known data to block 10 and 12
+	for i := range image[10*blockSize : 11*blockSize] {
+		image[10*blockSize+i] = 0xAA
+	}
+	for i := range image[12*blockSize : 13*blockSize] {
+		image[12*blockSize+i] = 0xCC
+	}
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	ext4fs := &FileSystem{r: sr, sb: Superblock{LogBlockSize: 2}, cache: &mockCache[string, any]{}}
+
+	fi := FileInfo{
+		name:  "sparse.bin",
+		inode: inode,
+		mode:  fs.FileMode(inode.Mode),
+	}
+	f, err := ext4fs.fileFromBlock(fi, "sparse.bin")
+	if err != nil {
+		t.Fatalf("fileFromBlock failed: %v", err)
+	}
+
+	// Block 0 (physical 10) should be in table
+	if _, ok := f.table[0]; !ok {
+		t.Error("block 0 should be in data table")
+	}
+	// Block 1 (hole) should NOT be in table
+	if _, ok := f.table[1]; ok {
+		t.Error("block 1 (hole) should not be in data table")
+	}
+	// Block 2 (physical 12) should be in table
+	if _, ok := f.table[2]; !ok {
+		t.Error("block 2 should be in data table")
+	}
+
+	// Read block 0 — should be 0xAA
+	buf := make([]byte, blockSize)
+	n, err := f.Read(buf)
+	if err != nil {
+		t.Fatalf("Read block 0 failed: %v", err)
+	}
+	if n != blockSize {
+		t.Fatalf("Read block 0: got %d bytes, want %d", n, blockSize)
+	}
+	if buf[0] != 0xAA || buf[blockSize-1] != 0xAA {
+		t.Errorf("block 0 data: got %#x...%#x, want 0xAA", buf[0], buf[blockSize-1])
+	}
+
+	// Read block 1 — hole, should be zeros
+	n, err = f.Read(buf)
+	if err != nil {
+		t.Fatalf("Read block 1 (hole) failed: %v", err)
+	}
+	for i, b := range buf[:n] {
+		if b != 0 {
+			t.Errorf("block 1 (hole) byte[%d] = %#x, want 0", i, b)
+			break
+		}
+	}
+
+	// Read block 2 — should be 0xCC
+	n, err = f.Read(buf)
+	if err != nil {
+		t.Fatalf("Read block 2 failed: %v", err)
+	}
+	if buf[0] != 0xCC || buf[n-1] != 0xCC {
+		t.Errorf("block 2 data: got %#x...%#x, want 0xCC", buf[0], buf[n-1])
+	}
+}
+
+// --- listEntries non-HTree block addressing path ---
+
+func TestListEntriesBlockAddressingReadAt(t *testing.T) {
+	const blockSize = 4096
+
+	// Physical layout:
+	// Block 2: inode table
+	// Block 4: directory block (logical block 0) with entries
+	// Block 5: directory block (logical block 1) with entries
+
+	totalSize := 6 * blockSize
+	image := make([]byte, totalSize)
+
+	// Directory entries at physical block 4
+	var block0Data []byte
+	block0Data = append(block0Data, buildDirEntry(2, ".", 2)...)
+	block0Data = append(block0Data, buildDirEntry(2, "..", 2)...)
+	block0Data = append(block0Data, buildDirEntry(100, "fileA", 1)...)
+	copy(image[4*blockSize:], block0Data)
+
+	// Directory entries at physical block 5
+	var block1Data []byte
+	block1Data = append(block1Data, buildDirEntry(101, "fileB", 1)...)
+	copy(image[5*blockSize:], block1Data)
+
+	// Build root inode (inode 2) — directory with block addressing, no EXTENTS_FL, no INDEX_FL
+	rootInode := Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  0, // no EXTENTS_FL, no INDEX_FL
+		SizeLo: 2 * uint32(blockSize),
+	}
+	ba := BlockAddressing{}
+	ba.DirectBlock[0] = 4
+	ba.DirectBlock[1] = 5
+	var baBuf bytes.Buffer
+	binary.Write(&baBuf, binary.LittleEndian, &ba)
+	copy(rootInode.BlockOrExtents[:], baBuf.Bytes())
+
+	// Write inode to inode table: block 2, index 1 (inode 2 = index 1)
+	var inodeBuf bytes.Buffer
+	binary.Write(&inodeBuf, binary.LittleEndian, &rootInode)
+	copy(image[2*blockSize+256:], inodeBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:  sr,
+		sb: Superblock{LogBlockSize: 2, InodePerGroup: 64, InodeSize: 256},
+		gds: []GroupDescriptor{
+			{GroupDescriptor32: GroupDescriptor32{InodeTableLo: 2}},
+		},
+		cache: &mockCache[string, any]{},
+	}
+
+	entries, err := ext4fs.listEntries(rootInodeNumber)
+	if err != nil {
+		t.Fatalf("listEntries failed: %v", err)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.Name] = true
+	}
+	for _, expected := range []string{"fileA", "fileB"} {
+		if !names[expected] {
+			t.Errorf("expected %q in entries", expected)
+		}
 	}
 }
