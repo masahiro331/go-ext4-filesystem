@@ -3,6 +3,7 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"testing"
 )
 
@@ -81,5 +82,404 @@ func TestExtractDirectoryEntriesSkipsDeletedChecksum(t *testing.T) {
 	}
 	if entries[0].Name != "keep" {
 		t.Errorf("expected 'keep', got %q", entries[0].Name)
+	}
+}
+
+func TestParseDxBlockNumbers(t *testing.T) {
+	tests := []struct {
+		name   string
+		count  uint16
+		data   []byte
+		expect []uint32
+	}{
+		{
+			name:  "single entry (header only)",
+			count: 1,
+			data: func() []byte {
+				b := make([]byte, 4)
+				binary.LittleEndian.PutUint32(b, 5)
+				return b
+			}(),
+			expect: []uint32{5},
+		},
+		{
+			name:  "three entries",
+			count: 3,
+			data: func() []byte {
+				// block0(4) + entry1(hash:4+block:4) + entry2(hash:4+block:4)
+				b := make([]byte, 4+8+8)
+				binary.LittleEndian.PutUint32(b[0:], 10)   // block0
+				binary.LittleEndian.PutUint32(b[4:], 100)  // hash1
+				binary.LittleEndian.PutUint32(b[8:], 20)   // block1
+				binary.LittleEndian.PutUint32(b[12:], 200) // hash2
+				binary.LittleEndian.PutUint32(b[16:], 30)  // block2
+				return b
+			}(),
+			expect: []uint32{10, 20, 30},
+		},
+		{
+			name:   "empty data",
+			count:  1,
+			data:   []byte{},
+			expect: []uint32{},
+		},
+		{
+			name:   "count zero",
+			count:  0,
+			data:   make([]byte, 32),
+			expect: []uint32{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDxBlockNumbers(tt.data, tt.count)
+			if len(got) != len(tt.expect) {
+				t.Fatalf("expected %d blocks, got %d", len(tt.expect), len(got))
+			}
+			for i := range tt.expect {
+				if got[i] != tt.expect[i] {
+					t.Errorf("block[%d] = %d, want %d", i, got[i], tt.expect[i])
+				}
+			}
+		})
+	}
+}
+
+// buildHTreeRootBlock constructs an HTree root block with the given parameters.
+func buildHTreeRootBlock(blockSize int, indirectLevels uint8, leafBlocks []uint32) []byte {
+	block := make([]byte, blockSize)
+
+	// dot entry: inode=2, rec_len=12, name_len=1, file_type=2
+	binary.LittleEndian.PutUint32(block[0x00:], 2)
+	binary.LittleEndian.PutUint16(block[0x04:], 12)
+	block[0x06] = 1
+	block[0x07] = 2
+	block[0x08] = '.'
+
+	// dotdot entry: inode=2, rec_len=blockSize-12, name_len=2, file_type=2
+	binary.LittleEndian.PutUint32(block[0x0C:], 2)
+	binary.LittleEndian.PutUint16(block[0x10:], uint16(blockSize-12))
+	block[0x12] = 2
+	block[0x13] = 2
+	block[0x14] = '.'
+	block[0x15] = '.'
+
+	// dx_root_info at 0x18
+	binary.LittleEndian.PutUint32(block[0x18:], 0) // reserved_zero
+	block[0x1C] = 1                                // hash_version
+	block[0x1D] = 8                                // info_length
+	block[0x1E] = indirectLevels
+	block[0x1F] = 0
+
+	// DxCountLimit at 0x20
+	count := uint16(len(leafBlocks))
+	binary.LittleEndian.PutUint16(block[0x20:], 100) // limit
+	binary.LittleEndian.PutUint16(block[0x22:], count)
+
+	// dx_entries starting at 0x24
+	// header entry: block0
+	if len(leafBlocks) > 0 {
+		binary.LittleEndian.PutUint32(block[0x24:], leafBlocks[0])
+	}
+	// remaining entries: hash + block
+	for i := 1; i < len(leafBlocks); i++ {
+		off := 0x28 + (i-1)*8
+		binary.LittleEndian.PutUint32(block[off:], uint32(i*0x1000)) // hash
+		binary.LittleEndian.PutUint32(block[off+4:], leafBlocks[i])  // block
+	}
+
+	return block
+}
+
+// buildHTreeInternalNode constructs an HTree internal node block.
+func buildHTreeInternalNode(blockSize int, childBlocks []uint32) []byte {
+	block := make([]byte, blockSize)
+
+	// fake dirent: inode=0, rec_len=blockSize, name_len=0, file_type=0
+	binary.LittleEndian.PutUint32(block[0x00:], 0)
+	binary.LittleEndian.PutUint16(block[0x04:], uint16(blockSize))
+	block[0x06] = 0
+	block[0x07] = 0
+
+	// DxCountLimit at 0x08
+	count := uint16(len(childBlocks))
+	binary.LittleEndian.PutUint16(block[0x08:], 100) // limit
+	binary.LittleEndian.PutUint16(block[0x0A:], count)
+
+	// dx_entries starting at 0x0C
+	if len(childBlocks) > 0 {
+		binary.LittleEndian.PutUint32(block[0x0C:], childBlocks[0])
+	}
+	for i := 1; i < len(childBlocks); i++ {
+		off := 0x10 + (i-1)*8
+		binary.LittleEndian.PutUint32(block[off:], uint32(i*0x1000)) // hash
+		binary.LittleEndian.PutUint32(block[off+4:], childBlocks[i]) // block
+	}
+
+	return block
+}
+
+func TestListEntriesHTreeDirect(t *testing.T) {
+	const blockSize = 4096
+
+	// Physical layout:
+	// Block 4: HTree root (logical dir block 0)
+	// Block 5: Leaf block (logical dir block 1) with entries
+	// Block 6: Leaf block (logical dir block 2) with entries
+
+	totalSize := 7 * blockSize
+	image := make([]byte, totalSize)
+
+	// HTree root at physical block 4 - points to leaf blocks 1 and 2
+	rootBlock := buildHTreeRootBlock(blockSize, 0, []uint32{1, 2})
+	copy(image[4*blockSize:], rootBlock)
+
+	// Leaf block at physical block 5 (logical dir block 1)
+	var leaf1Data []byte
+	leaf1Data = append(leaf1Data, buildDirEntry(100, "hello.txt", 1)...)
+	leaf1Data = append(leaf1Data, buildDirEntry(101, "world.txt", 1)...)
+	copy(image[5*blockSize:], leaf1Data)
+
+	// Leaf block at physical block 6 (logical dir block 2)
+	var leaf2Data []byte
+	leaf2Data = append(leaf2Data, buildDirEntry(102, "foo.txt", 1)...)
+	copy(image[6*blockSize:], leaf2Data)
+
+	// Build inode with extent tree: 3 logical blocks starting at physical block 4
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: 3 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 3, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	// Construct FileSystem directly
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2}, // blockSize = 4096
+		cache: &mockCache[string, any]{},
+	}
+
+	entries, err := ext4fs.listEntriesHTree(rootInode)
+	if err != nil {
+		t.Fatalf("listEntriesHTree failed: %v", err)
+	}
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.Name] = true
+	}
+	for _, expected := range []string{"hello.txt", "world.txt", "foo.txt"} {
+		if !names[expected] {
+			t.Errorf("expected %q in entries", expected)
+		}
+	}
+}
+
+func TestListEntriesHTreeWithInternalNodes(t *testing.T) {
+	const blockSize = 4096
+
+	// Physical layout:
+	// Block 4: HTree root (logical dir block 0), indirect_levels=1
+	//   -> points to internal nodes at logical blocks 1 and 2
+	// Block 5: Internal node (logical dir block 1) -> leaf blocks 3, 4
+	// Block 6: Internal node (logical dir block 2) -> leaf block 5
+	// Block 7: Leaf block (logical dir block 3)
+	// Block 8: Leaf block (logical dir block 4)
+	// Block 9: Leaf block (logical dir block 5)
+
+	totalSize := 10 * blockSize
+	image := make([]byte, totalSize)
+
+	// HTree root at physical block 4, indirect_levels=1
+	rootBlock := buildHTreeRootBlock(blockSize, 1, []uint32{1, 2})
+	copy(image[4*blockSize:], rootBlock)
+
+	// Internal node at physical block 5 (logical block 1) -> leaf blocks 3 and 4
+	internalNode1 := buildHTreeInternalNode(blockSize, []uint32{3, 4})
+	copy(image[5*blockSize:], internalNode1)
+
+	// Internal node at physical block 6 (logical block 2) -> leaf block 5
+	internalNode2 := buildHTreeInternalNode(blockSize, []uint32{5})
+	copy(image[6*blockSize:], internalNode2)
+
+	// Leaf blocks
+	var leaf3 []byte
+	leaf3 = append(leaf3, buildDirEntry(10, "aaa", 1)...)
+	copy(image[7*blockSize:], leaf3)
+
+	var leaf4 []byte
+	leaf4 = append(leaf4, buildDirEntry(11, "bbb", 1)...)
+	copy(image[8*blockSize:], leaf4)
+
+	var leaf5 []byte
+	leaf5 = append(leaf5, buildDirEntry(12, "ccc", 1)...)
+	copy(image[9*blockSize:], leaf5)
+
+	// Build inode: 6 logical blocks starting at physical block 4
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: 6 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 6, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2},
+		cache: &mockCache[string, any]{},
+	}
+
+	entries, err := ext4fs.listEntriesHTree(rootInode)
+	if err != nil {
+		t.Fatalf("listEntriesHTree failed: %v", err)
+	}
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.Name] = true
+	}
+	for _, expected := range []string{"aaa", "bbb", "ccc"} {
+		if !names[expected] {
+			t.Errorf("expected %q in entries", expected)
+		}
+	}
+}
+
+func TestListEntriesHTreeBlockAddressing(t *testing.T) {
+	const blockSize = 4096
+
+	// Physical layout (same as TestListEntriesHTreeDirect but using block addressing):
+	// Block 4: HTree root (logical dir block 0)
+	// Block 5: Leaf block (logical dir block 1)
+
+	totalSize := 6 * blockSize
+	image := make([]byte, totalSize)
+
+	rootBlock := buildHTreeRootBlock(blockSize, 0, []uint32{1})
+	copy(image[4*blockSize:], rootBlock)
+
+	var leafData []byte
+	leafData = append(leafData, buildDirEntry(100, "block_file", 1)...)
+	copy(image[5*blockSize:], leafData)
+
+	// Build inode with block addressing (no EXTENTS_FL)
+	rootInode := &Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL, // no EXTENTS_FL
+		SizeLo: 2 * uint32(blockSize),
+	}
+	// BlockAddressing: direct blocks [0]=4, [1]=5
+	ba := BlockAddressing{}
+	ba.DirectBlock[0] = 4
+	ba.DirectBlock[1] = 5
+	var baBuf bytes.Buffer
+	binary.Write(&baBuf, binary.LittleEndian, &ba)
+	copy(rootInode.BlockOrExtents[:], baBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:     sr,
+		sb:    Superblock{LogBlockSize: 2},
+		cache: &mockCache[string, any]{},
+	}
+
+	entries, err := ext4fs.listEntriesHTree(rootInode)
+	if err != nil {
+		t.Fatalf("listEntriesHTree failed: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Name != "block_file" {
+		t.Errorf("expected 'block_file', got %q", entries[0].Name)
+	}
+}
+
+func TestListEntriesDispatchesToHTree(t *testing.T) {
+	const blockSize = 4096
+
+	// Physical layout:
+	// Block 2: inode table
+	// Block 4: HTree root (logical dir block 0)
+	// Block 5: Leaf block (logical dir block 1)
+
+	totalSize := 6 * blockSize
+	image := make([]byte, totalSize)
+
+	rootBlock := buildHTreeRootBlock(blockSize, 0, []uint32{1})
+	copy(image[4*blockSize:], rootBlock)
+
+	var leafData []byte
+	leafData = append(leafData, buildDirEntry(100, "dispatched", 1)...)
+	copy(image[5*blockSize:], leafData)
+
+	// Build root inode (inode 2) at inode table block 2, index 1
+	rootInode := Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  INDEX_FL | EXTENTS_FL,
+		SizeLo: 2 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 2, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	// Write inode to inode table: block 2, index 1 (inode 2 = index 1)
+	var inodeBuf bytes.Buffer
+	binary.Write(&inodeBuf, binary.LittleEndian, &rootInode)
+	copy(image[2*blockSize+256:], inodeBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:  sr,
+		sb: Superblock{LogBlockSize: 2, InodePerGroup: 64, InodeSize: 256},
+		gds: []GroupDescriptor{
+			{GroupDescriptor32: GroupDescriptor32{InodeTableLo: 2}},
+		},
+		cache: &mockCache[string, any]{},
+	}
+
+	// Call listEntries (not listEntriesHTree) to verify dispatch
+	entries, err := ext4fs.listEntries(rootInodeNumber)
+	if err != nil {
+		t.Fatalf("listEntries failed: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Name != "dispatched" {
+		t.Errorf("expected 'dispatched', got %q", entries[0].Name)
 	}
 }
