@@ -206,6 +206,9 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 			return nil, xerrors.Errorf("failed to read align: %w", err)
 		}
 
+		if dirEntry.Inode == 0 {
+			continue
+		}
 		if dirEntry.Name == "." || dirEntry.Name == ".." {
 			continue
 		}
