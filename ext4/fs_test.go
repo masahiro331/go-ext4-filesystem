@@ -1048,6 +1048,85 @@ func TestFileFromBlockSkipsZeroAddresses(t *testing.T) {
 	}
 }
 
+// --- listEntries non-HTree extent path ---
+
+func TestListEntriesExtentReadAt(t *testing.T) {
+	const blockSize = 4096
+
+	// Physical layout:
+	// Block 2: inode table
+	// Block 4: directory block (logical block 0) with entries
+	// Block 5: directory block (logical block 1) with entries
+
+	totalSize := 6 * blockSize
+	image := make([]byte, totalSize)
+
+	// Directory entries at physical block 4
+	// In real ext4, the last entry in a block has RecLen padded to fill the block.
+	var block0Data []byte
+	block0Data = append(block0Data, buildDirEntry(2, ".", 2)...)
+	block0Data = append(block0Data, buildDirEntry(2, "..", 2)...)
+	extAEntry := buildDirEntry(100, "extA", 1)
+	// Pad last entry's RecLen to fill the rest of block 4
+	binary.LittleEndian.PutUint16(extAEntry[4:6], uint16(blockSize-len(block0Data)))
+	block0Data = append(block0Data, extAEntry...)
+	copy(image[4*blockSize:], block0Data)
+
+	// Directory entries at physical block 5
+	var block1Data []byte
+	block1Data = append(block1Data, buildDirEntry(101, "extB", 1)...)
+	copy(image[5*blockSize:], block1Data)
+
+	// Build root inode (inode 2) — directory with EXTENTS_FL, no INDEX_FL
+	rootInode := Inode{
+		Mode:   0x4000 | 0755,
+		Flags:  EXTENTS_FL, // extent-based, no HTree
+		SizeLo: 2 * uint32(blockSize),
+	}
+	var extBuf bytes.Buffer
+	binary.Write(&extBuf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&extBuf, binary.LittleEndian, &Extent{
+		Block: 0, Len: 2, StartHi: 0, StartLo: 4,
+	})
+	copy(rootInode.BlockOrExtents[:], extBuf.Bytes())
+
+	// Write inode to inode table: block 2, index 1 (inode 2 = index 1)
+	var inodeBuf bytes.Buffer
+	binary.Write(&inodeBuf, binary.LittleEndian, &rootInode)
+	copy(image[2*blockSize+256:], inodeBuf.Bytes())
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:  sr,
+		sb: Superblock{LogBlockSize: 2, InodePerGroup: 64, InodeSize: 256},
+		gds: []GroupDescriptor{
+			{GroupDescriptor32: GroupDescriptor32{InodeTableLo: 2}},
+		},
+		cache: &mockCache[string, any]{},
+	}
+
+	entries, err := ext4fs.listEntries(rootInodeNumber)
+	if err != nil {
+		t.Fatalf("listEntries failed: %v", err)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.Name] = true
+	}
+	for _, expected := range []string{"extA", "extB"} {
+		if !names[expected] {
+			t.Errorf("expected %q in entries", expected)
+		}
+	}
+}
+
 // --- listEntries non-HTree block addressing path ---
 
 func TestListEntriesBlockAddressingReadAt(t *testing.T) {
