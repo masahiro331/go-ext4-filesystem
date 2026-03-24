@@ -63,7 +63,7 @@ func TestExtents_InternalNodeUsesFullBlockSize(t *testing.T) {
 		LeafLow: leafBlock,
 	})
 
-	extents, err := fs.extents(rootBuf.Bytes(), nil)
+	extents, err := fs.extents(rootBuf.Bytes(), nil, extentDepthRoot)
 	if err != nil {
 		t.Fatalf("extents() error: %v", err)
 	}
@@ -86,9 +86,52 @@ func TestExtents_EntriesExceedsMax(t *testing.T) {
 	fs := &FileSystem{
 		sb: Superblock{LogBlockSize: 2},
 	}
-	_, err := fs.extents(rootBuf.Bytes(), nil)
+	_, err := fs.extents(rootBuf.Bytes(), nil, extentDepthRoot)
 	if err == nil {
 		t.Fatal("extents() should return error when Entries > Max")
+	}
+}
+
+// TestExtents_DepthMismatch verifies that extents() rejects a child node
+// whose depth does not match the expected value (parent depth - 1).
+func TestExtents_DepthMismatch(t *testing.T) {
+	const blockSize = 4096
+
+	// Build a child node with depth=1 (should be 0 if parent is depth=1)
+	childBuf := make([]byte, blockSize)
+	childWriter := bytes.NewBuffer(childBuf[:0])
+	binary.Write(childWriter, binary.LittleEndian, ExtentHeader{
+		Magic:   0xF30A,
+		Entries: 0,
+		Max:     340,
+		Depth:   1, // wrong: parent is depth=1, so child should be 0
+	})
+	copy(childBuf, childWriter.Bytes())
+
+	image := make([]byte, blockSize*2)
+	copy(image[blockSize:], childBuf)
+
+	r := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+	fs := &FileSystem{
+		r:  r,
+		sb: Superblock{LogBlockSize: 2},
+	}
+
+	rootBuf := &bytes.Buffer{}
+	binary.Write(rootBuf, binary.LittleEndian, ExtentHeader{
+		Magic:   0xF30A,
+		Entries: 1,
+		Max:     4,
+		Depth:   1,
+	})
+	binary.Write(rootBuf, binary.LittleEndian, ExtentInternal{
+		Block:   0,
+		LeafLow: 1, // points to block 1
+	})
+
+	_, err := fs.extents(rootBuf.Bytes(), nil, extentDepthRoot)
+	if err == nil {
+		t.Fatal("extents() should return error when child depth does not match expected")
 	}
 }
 
@@ -106,7 +149,7 @@ func TestExtents_InvalidMagic(t *testing.T) {
 	fs := &FileSystem{
 		sb: Superblock{LogBlockSize: 2},
 	}
-	_, err := fs.extents(rootBuf.Bytes(), nil)
+	_, err := fs.extents(rootBuf.Bytes(), nil, extentDepthRoot)
 	if err == nil {
 		t.Fatal("extents() should return error for invalid magic")
 	}
@@ -126,7 +169,7 @@ func TestExtents_DepthExceedsMax(t *testing.T) {
 	fs := &FileSystem{
 		sb: Superblock{LogBlockSize: 2},
 	}
-	_, err := fs.extents(rootBuf.Bytes(), nil)
+	_, err := fs.extents(rootBuf.Bytes(), nil, extentDepthRoot)
 	if err == nil {
 		t.Fatal("extents() should return error for depth > 5")
 	}
@@ -188,7 +231,7 @@ func TestExtents_InternalNodeLeafHighAddress(t *testing.T) {
 		LeafHigh: leafHigh,
 	})
 
-	extents, err := fs.extents(rootBuf.Bytes(), nil)
+	extents, err := fs.extents(rootBuf.Bytes(), nil, extentDepthRoot)
 	if err != nil {
 		t.Fatalf("extents() error: %v", err)
 	}

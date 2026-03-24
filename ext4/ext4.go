@@ -20,6 +20,11 @@ Ext4 Block Layout
 +-----------------+------------------+-------------------+---------------------+-------------------+--------------+-------------+------------------+
 */
 
+const (
+	// extentDepthRoot indicates no parent depth to validate against.
+	extentDepthRoot = -1
+)
+
 var (
 	ErrInodeNotFound = xerrors.New("inode not found")
 )
@@ -33,7 +38,7 @@ func Check(r io.Reader) bool {
 }
 
 func (ext4 *FileSystem) Extents(inode *Inode) ([]Extent, error) {
-	extents, err := ext4.extents(inode.BlockOrExtents[:], nil)
+	extents, err := ext4.extents(inode.BlockOrExtents[:], nil, extentDepthRoot)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get extents: %w", err)
 	}
@@ -120,7 +125,7 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	return &inode, nil
 }
 
-func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
+func (ext4 *FileSystem) extents(b []byte, extents []Extent, expectedDepth int) ([]Extent, error) {
 	extentReader := bytes.NewReader(b)
 	extentHeader := &ExtentHeader{}
 	err := binary.Read(extentReader, binary.LittleEndian, extentHeader)
@@ -134,6 +139,10 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 
 	if extentHeader.Depth > 5 {
 		return nil, xerrors.Errorf("extent tree depth %d exceeds maximum of 5", extentHeader.Depth)
+	}
+
+	if expectedDepth >= 0 && int(extentHeader.Depth) != expectedDepth {
+		return nil, xerrors.Errorf("extent tree depth %d does not match expected %d", extentHeader.Depth, expectedDepth)
 	}
 
 	if extentHeader.Entries > extentHeader.Max {
@@ -163,7 +172,7 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 				return nil, xerrors.Errorf("failed to read leaf node extent: %w", err)
 			}
 
-			extents, err = ext4.extents(b, extents)
+			extents, err = ext4.extents(b, extents, int(extentHeader.Depth)-1)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to get extents: %w", err)
 			}

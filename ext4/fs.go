@@ -597,7 +597,7 @@ func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, erro
 }
 
 func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
-	extents, err := ext4.extents(fi.inode.BlockOrExtents[:], nil)
+	extents, err := ext4.extents(fi.inode.BlockOrExtents[:], nil, extentDepthRoot)
 	if err != nil {
 		return nil, err
 	}
