@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/lunixbochs/struc"
@@ -601,6 +602,9 @@ func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(extents, func(i, j int) bool {
+		return extents[i].Block < extents[j].Block
+	})
 
 	dt := make(dataTable)
 	for _, e := range extents {

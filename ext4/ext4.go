@@ -42,6 +42,9 @@ func (ext4 *FileSystem) Extents(inode *Inode) ([]Extent, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get extents: %w", err)
 	}
+	sort.Slice(extents, func(i, j int) bool {
+		return extents[i].Block < extents[j].Block
+	})
 	return extents, nil
 }
 
@@ -178,9 +181,6 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent, expectedDepth int) (
 			}
 		}
 	}
-	sort.Slice(extents, func(i, j int) bool {
-		return extents[i].Block < extents[j].Block
-	})
 	return extents, nil
 }
 
