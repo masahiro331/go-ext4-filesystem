@@ -72,6 +72,26 @@ func TestExtents_InternalNodeUsesFullBlockSize(t *testing.T) {
 	}
 }
 
+// TestExtents_DepthExceedsMax verifies that extents() rejects an extent tree
+// with depth > 5, which is the maximum defined by the ext4 specification.
+func TestExtents_DepthExceedsMax(t *testing.T) {
+	rootBuf := &bytes.Buffer{}
+	binary.Write(rootBuf, binary.LittleEndian, ExtentHeader{
+		Magic:   0xF30A,
+		Entries: 0,
+		Max:     4,
+		Depth:   6,
+	})
+
+	fs := &FileSystem{
+		sb: Superblock{LogBlockSize: 2},
+	}
+	_, err := fs.extents(rootBuf.Bytes(), nil)
+	if err == nil {
+		t.Fatal("extents() should return error for depth > 5")
+	}
+}
+
 // TestExtents_InternalNodeLeafHighAddress verifies that extents() correctly
 // combines LeafHigh and LeafLow to compute the physical block address for
 // internal extent nodes. Before the fix, LeafHigh<<32 was added to
