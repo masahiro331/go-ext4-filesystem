@@ -72,6 +72,93 @@ func TestExtents_InternalNodeUsesFullBlockSize(t *testing.T) {
 	}
 }
 
+// TestExtents_InternalNodeLeafHighAddress verifies that extents() correctly
+// combines LeafHigh and LeafLow to compute the physical block address for
+// internal extent nodes. Before the fix, LeafHigh<<32 was added to
+// LeafLow*blockSize due to operator precedence, producing a wrong offset.
+func TestExtents_InternalNodeLeafHighAddress(t *testing.T) {
+	const blockSize = 4096
+	const leafHigh = uint16(1)
+	const leafLow = uint32(2)
+	// The leaf node should be at physical block (1<<32 | 2) = 0x100000002
+	expectedBlock := int64(leafHigh)<<32 | int64(leafLow) // 4294967298
+	expectedOffset := expectedBlock * blockSize            // 17592186044416
+
+	// We need an image large enough; use a SectionReader that allows reads
+	// at any offset by backing with a custom ReaderAt.
+	leafBuf := make([]byte, blockSize)
+	leafWriter := bytes.NewBuffer(leafBuf[:0])
+	binary.Write(leafWriter, binary.LittleEndian, ExtentHeader{
+		Magic:   0xF30A,
+		Entries: 1,
+		Max:     340,
+		Depth:   0,
+	})
+	binary.Write(leafWriter, binary.LittleEndian, Extent{
+		Block:   0,
+		Len:     1,
+		StartHi: 0,
+		StartLo: 999,
+	})
+	copy(leafBuf, leafWriter.Bytes())
+
+	// sparseReader returns leafBuf at the expected offset, zeros elsewhere.
+	sr := &sparseBlockReader{
+		targetOffset: expectedOffset,
+		data:         leafBuf,
+	}
+	r := io.NewSectionReader(sr, 0, expectedOffset+int64(blockSize))
+	fs := &FileSystem{
+		r: r,
+		sb: Superblock{
+			LogBlockSize: 2, // 4096
+		},
+	}
+
+	rootBuf := &bytes.Buffer{}
+	binary.Write(rootBuf, binary.LittleEndian, ExtentHeader{
+		Magic:   0xF30A,
+		Entries: 1,
+		Max:     4,
+		Depth:   1,
+	})
+	binary.Write(rootBuf, binary.LittleEndian, ExtentInternal{
+		Block:   0,
+		LeafLow: leafLow,
+		LeafHigh: leafHigh,
+	})
+
+	extents, err := fs.extents(rootBuf.Bytes(), nil)
+	if err != nil {
+		t.Fatalf("extents() error: %v", err)
+	}
+	if len(extents) != 1 {
+		t.Errorf("got %d extents, want 1", len(extents))
+	}
+}
+
+// sparseBlockReader is a ReaderAt that returns data at a specific offset
+// and zeros everywhere else.
+type sparseBlockReader struct {
+	targetOffset int64
+	data         []byte
+}
+
+func (s *sparseBlockReader) ReadAt(p []byte, off int64) (int, error) {
+	end := off + int64(len(p))
+	targetEnd := s.targetOffset + int64(len(s.data))
+
+	if off >= s.targetOffset && end <= targetEnd {
+		copy(p, s.data[off-s.targetOffset:])
+		return len(p), nil
+	}
+	// Return zeros for any other offset
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
 // TestGetInode_SmallInodeSize verifies that getInode() correctly reads
 // inodes when InodeSize is smaller than the Go Inode struct (256 bytes).
 // With InodeSize=128 (ext2/ext3), every 4th inode in a sector would

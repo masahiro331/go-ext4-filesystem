@@ -145,7 +145,8 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 				return nil, xerrors.Errorf("failed to read internal extent: %w", err)
 			}
 			b := make([]byte, ext4.sb.GetBlockSize())
-			_, err = ext4.r.ReadAt(b, int64(extent.LeafHigh)<<32+int64(extent.LeafLow)*ext4.sb.GetBlockSize())
+			physBlock := int64(extent.LeafHigh)<<32 | int64(extent.LeafLow)
+			_, err = ext4.r.ReadAt(b, physBlock*ext4.sb.GetBlockSize())
 			if err != nil {
 				return nil, xerrors.Errorf("failed to read leaf node extent: %w", err)
 			}
