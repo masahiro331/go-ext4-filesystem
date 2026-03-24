@@ -166,7 +166,7 @@ func TestFileInfoMode(t *testing.T) {
 		{"symlink 0777", 0xA1FF, fs.ModeSymlink, 0o777},
 		{"socket 0755", 0xC1ED, fs.ModeSocket, 0o755},
 		{"fifo 0644", 0x11A4, fs.ModeNamedPipe, 0o644},
-		{"char device 0666", 0x21B6, fs.ModeCharDevice, 0o666},
+		{"char device 0666", 0x21B6, fs.ModeCharDevice | fs.ModeDevice, 0o666},
 		{"block device 0660", 0x61B0, fs.ModeDevice, 0o660},
 		{"setuid", 0x89A4, 0, 0o644 | fs.ModeSetuid},
 		{"setgid", 0x85A4, 0, 0o644 | fs.ModeSetgid},
