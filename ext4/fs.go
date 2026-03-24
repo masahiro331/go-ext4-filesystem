@@ -204,6 +204,9 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 			break
 		}
 		align := dirEntry.RecLen - nameAndHeader
+		if int(align) > directoryReader.Len() {
+			break
+		}
 		_, err = directoryReader.Read(make([]byte, align))
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read align: %w", err)

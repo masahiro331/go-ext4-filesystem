@@ -735,6 +735,30 @@ func TestExtractDirectoryEntriesRecLenUnderflow(t *testing.T) {
 	}
 }
 
+func TestExtractDirectoryEntriesRecLenOverflow(t *testing.T) {
+	// Build a valid entry followed by an entry whose RecLen exceeds remaining buffer.
+	// The first entry should be returned; the second should cause parsing to stop.
+	first := buildDirEntry(10, "hello", 1)     // valid entry
+	second := make([]byte, 12)                  // entry with oversized RecLen
+	binary.LittleEndian.PutUint32(second[0:], 20) // inode=20
+	binary.LittleEndian.PutUint16(second[4:], 0xFFFF) // rec_len=65535 (way beyond buffer)
+	second[6] = 3                               // name_len=3
+	second[7] = 1                               // flags
+	copy(second[8:], []byte("foo"))
+
+	buf := append(first, second...)
+	entries, err := extractDirectoryEntries(bytes.NewBuffer(buf))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry (first valid), got %d", len(entries))
+	}
+	if len(entries) > 0 && entries[0].Name != "hello" {
+		t.Errorf("expected first entry name 'hello', got %q", entries[0].Name)
+	}
+}
+
 func TestListEntriesDispatchesToHTree(t *testing.T) {
 	const blockSize = 4096
 
