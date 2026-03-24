@@ -72,6 +72,26 @@ func TestExtents_InternalNodeUsesFullBlockSize(t *testing.T) {
 	}
 }
 
+// TestExtents_InvalidMagic verifies that extents() rejects an extent header
+// with an invalid magic number.
+func TestExtents_InvalidMagic(t *testing.T) {
+	rootBuf := &bytes.Buffer{}
+	binary.Write(rootBuf, binary.LittleEndian, ExtentHeader{
+		Magic:   0x0000,
+		Entries: 0,
+		Max:     4,
+		Depth:   0,
+	})
+
+	fs := &FileSystem{
+		sb: Superblock{LogBlockSize: 2},
+	}
+	_, err := fs.extents(rootBuf.Bytes(), nil)
+	if err == nil {
+		t.Fatal("extents() should return error for invalid magic")
+	}
+}
+
 // TestExtents_DepthExceedsMax verifies that extents() rejects an extent tree
 // with depth > 5, which is the maximum defined by the ext4 specification.
 func TestExtents_DepthExceedsMax(t *testing.T) {

@@ -128,6 +128,10 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 		return nil, xerrors.Errorf("failed to parse extent header: %w", err)
 	}
 
+	if extentHeader.Magic != 0xF30A {
+		return nil, xerrors.Errorf("invalid extent header magic: %#x", extentHeader.Magic)
+	}
+
 	if extentHeader.Depth > 5 {
 		return nil, xerrors.Errorf("extent tree depth %d exceeds maximum of 5", extentHeader.Depth)
 	}
