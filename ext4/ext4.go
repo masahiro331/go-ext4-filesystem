@@ -136,6 +136,10 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 		return nil, xerrors.Errorf("extent tree depth %d exceeds maximum of 5", extentHeader.Depth)
 	}
 
+	if extentHeader.Entries > extentHeader.Max {
+		return nil, xerrors.Errorf("extent header entries (%d) exceeds max (%d)", extentHeader.Entries, extentHeader.Max)
+	}
+
 	if extentHeader.Depth == 0 {
 		for entry := uint16(0); entry < extentHeader.Entries; entry++ {
 			var extent Extent

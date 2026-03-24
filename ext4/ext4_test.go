@@ -72,6 +72,26 @@ func TestExtents_InternalNodeUsesFullBlockSize(t *testing.T) {
 	}
 }
 
+// TestExtents_EntriesExceedsMax verifies that extents() rejects an extent
+// header where Entries > Max.
+func TestExtents_EntriesExceedsMax(t *testing.T) {
+	rootBuf := &bytes.Buffer{}
+	binary.Write(rootBuf, binary.LittleEndian, ExtentHeader{
+		Magic:   0xF30A,
+		Entries: 10,
+		Max:     4,
+		Depth:   0,
+	})
+
+	fs := &FileSystem{
+		sb: Superblock{LogBlockSize: 2},
+	}
+	_, err := fs.extents(rootBuf.Bytes(), nil)
+	if err == nil {
+		t.Fatal("extents() should return error when Entries > Max")
+	}
+}
+
 // TestExtents_InvalidMagic verifies that extents() rejects an extent header
 // with an invalid magic number.
 func TestExtents_InvalidMagic(t *testing.T) {
