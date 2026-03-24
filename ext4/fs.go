@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/lunixbochs/struc"
@@ -598,13 +597,10 @@ func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, erro
 }
 
 func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
-	extents, err := ext4.extents(fi.inode.BlockOrExtents[:], nil, extentDepthRoot)
+	extents, err := ext4.Extents(fi.inode)
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(extents, func(i, j int) bool {
-		return extents[i].Block < extents[j].Block
-	})
 
 	dt := make(dataTable)
 	for _, e := range extents {
