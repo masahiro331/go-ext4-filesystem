@@ -27,7 +27,7 @@ type Extent struct {
 // IsUninitialized returns true if this extent is unwritten (allocated but
 // not yet written). Reads from such extents should return zeros.
 func (e *Extent) IsUninitialized() bool {
-	return e.Len > 0x7FFF
+	return e.Len&0x8000 != 0
 }
 
 // GetLen returns the actual number of blocks, masking off the
