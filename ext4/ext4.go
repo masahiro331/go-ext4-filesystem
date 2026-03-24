@@ -82,7 +82,7 @@ func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, 
 func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	c, ok := ext4.cache.Get(inodeCacheKey(inodeAddress))
 	if ok {
-		i := c.(Inode)
+		i, ok := c.(Inode)
 		if ok {
 			return &i, nil
 		}
