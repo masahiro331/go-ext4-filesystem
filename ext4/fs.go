@@ -175,7 +175,6 @@ func (ext4 *FileSystem) listFileInfo(ino int64) ([]FileInfo, error) {
 				name:  entry.Name,
 				ino:   int64(entry.Inode),
 				inode: inode,
-				mode:  fs.FileMode(inode.Mode),
 			},
 		)
 	}
@@ -507,7 +506,6 @@ func (ext4 *FileSystem) ReadDirInfo(name string) (fs.FileInfo, error) {
 		return FileInfo{
 			name:  "/",
 			inode: inode,
-			mode:  fs.FileMode(inode.Mode),
 		}, nil
 	}
 	name = strings.TrimRight(name, "/")
@@ -554,7 +552,6 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 			name:  fileName,
 			ino:   dir.ino,
 			inode: dir.inode,
-			mode:  fs.FileMode(dir.inode.Mode),
 		}
 		var f *File
 		if fi.inode.UsesExtents() {

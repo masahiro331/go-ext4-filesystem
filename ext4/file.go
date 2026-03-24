@@ -34,8 +34,6 @@ type FileInfo struct {
 	name  string
 	inode *Inode
 	ino   int64
-
-	mode fs.FileMode
 }
 
 // Type dirEntry is implemented io/fs DirEntry interface
@@ -71,7 +69,39 @@ func (fi FileInfo) Size() int64 {
 }
 
 func (fi FileInfo) Mode() fs.FileMode {
-	return fi.mode
+	m := fi.inode.Mode
+	mode := fs.FileMode(m & 0o777)
+
+	if m&0o1000 != 0 {
+		mode |= fs.ModeSticky
+	}
+	if m&0o2000 != 0 {
+		mode |= fs.ModeSetgid
+	}
+	if m&0o4000 != 0 {
+		mode |= fs.ModeSetuid
+	}
+
+	switch m & 0xF000 {
+	case 0xC000:
+		mode |= fs.ModeSocket
+	case 0xA000:
+		mode |= fs.ModeSymlink
+	case 0x8000:
+		// regular file
+	case 0x6000:
+		mode |= fs.ModeDevice
+	case 0x4000:
+		mode |= fs.ModeDir
+	case 0x2000:
+		mode |= fs.ModeCharDevice
+	case 0x1000:
+		mode |= fs.ModeNamedPipe
+	default:
+		mode |= fs.ModeIrregular
+	}
+
+	return mode
 }
 
 func (fi FileInfo) ModTime() time.Time {

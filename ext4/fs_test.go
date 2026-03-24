@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"io/fs"
 	"strings"
 	"testing"
 )
@@ -1079,7 +1078,6 @@ func TestFileFromBlockSkipsZeroAddresses(t *testing.T) {
 	fi := FileInfo{
 		name:  "sparse.bin",
 		inode: inode,
-		mode:  fs.FileMode(inode.Mode),
 	}
 	f, err := ext4fs.fileFromBlock(fi, "sparse.bin")
 	if err != nil {
@@ -1161,7 +1159,6 @@ func TestFileReadPartialLastBlock(t *testing.T) {
 	fi := FileInfo{
 		name:  "partial.bin",
 		inode: inode,
-		mode:  fs.FileMode(inode.Mode),
 	}
 	f, err := ext4fs.fileFromBlock(fi, "partial.bin")
 	if err != nil {

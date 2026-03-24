@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"io/fs"
 	"testing"
 )
 
@@ -150,6 +151,78 @@ func TestFileRead_AllSparse(t *testing.T) {
 		if b != 0 {
 			t.Fatalf("byte %d: got %#x, want 0", i, b)
 		}
+	}
+}
+
+func TestFileInfoMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		imode    uint16
+		wantType fs.FileMode
+		wantPerm fs.FileMode
+	}{
+		{"regular 0644", 0x81A4, 0, 0o644},
+		{"directory 0755", 0x41ED, fs.ModeDir, 0o755},
+		{"symlink 0777", 0xA1FF, fs.ModeSymlink, 0o777},
+		{"socket 0755", 0xC1ED, fs.ModeSocket, 0o755},
+		{"fifo 0644", 0x11A4, fs.ModeNamedPipe, 0o644},
+		{"char device 0666", 0x21B6, fs.ModeCharDevice, 0o666},
+		{"block device 0660", 0x61B0, fs.ModeDevice, 0o660},
+		{"setuid", 0x89A4, 0, 0o644 | fs.ModeSetuid},
+		{"setgid", 0x85A4, 0, 0o644 | fs.ModeSetgid},
+		{"sticky", 0x83A4, 0, 0o644 | fs.ModeSticky},
+		{"setuid+setgid+sticky", 0x8FA4, 0, 0o644 | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fi := FileInfo{
+				name:  "test",
+				inode: &Inode{Mode: tt.imode},
+			}
+			got := fi.Mode()
+
+			if got.Type() != tt.wantType {
+				t.Errorf("Type() = %v, want %v", got.Type(), tt.wantType)
+			}
+			if got.Perm() != tt.wantPerm.Perm() {
+				t.Errorf("Perm() = %o, want %o", got.Perm(), tt.wantPerm.Perm())
+			}
+			if tt.wantPerm&fs.ModeSetuid != 0 && got&fs.ModeSetuid == 0 {
+				t.Error("ModeSetuid not set")
+			}
+			if tt.wantPerm&fs.ModeSetgid != 0 && got&fs.ModeSetgid == 0 {
+				t.Error("ModeSetgid not set")
+			}
+			if tt.wantPerm&fs.ModeSticky != 0 && got&fs.ModeSticky == 0 {
+				t.Error("ModeSticky not set")
+			}
+
+			// Verify Go standard API works correctly
+			switch tt.wantType {
+			case fs.ModeDir:
+				if !got.IsDir() {
+					t.Error("IsDir() = false, want true")
+				}
+				if got.IsRegular() {
+					t.Error("IsRegular() = true, want false")
+				}
+			case 0:
+				if !got.IsRegular() {
+					t.Error("IsRegular() = false, want true")
+				}
+				if got.IsDir() {
+					t.Error("IsDir() = true, want false")
+				}
+			default:
+				if got.IsDir() {
+					t.Error("IsDir() should be false for non-dir type")
+				}
+				if got.IsRegular() {
+					t.Error("IsRegular() should be false for non-regular type")
+				}
+			}
+		})
 	}
 }
 
