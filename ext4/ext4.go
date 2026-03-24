@@ -185,7 +185,7 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent, expectedDepth int) (
 }
 
 func (e *Extent) offset() int64 {
-	return int64(e.StartHi)<<32 + int64(e.StartLo)
+	return int64(e.StartHi)<<32 | int64(e.StartLo)
 }
 
 func divWithRoundUp(a int, b int) int {
