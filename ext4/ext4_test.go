@@ -82,7 +82,7 @@ func TestExtents_InternalNodeLeafHighAddress(t *testing.T) {
 	const leafLow = uint32(2)
 	// The leaf node should be at physical block (1<<32 | 2) = 0x100000002
 	expectedBlock := int64(leafHigh)<<32 | int64(leafLow) // 4294967298
-	expectedOffset := expectedBlock * blockSize            // 17592186044416
+	expectedOffset := expectedBlock * blockSize           // 17592186044416
 
 	// We need an image large enough; use a SectionReader that allows reads
 	// at any offset by backing with a custom ReaderAt.
@@ -123,8 +123,8 @@ func TestExtents_InternalNodeLeafHighAddress(t *testing.T) {
 		Depth:   1,
 	})
 	binary.Write(rootBuf, binary.LittleEndian, ExtentInternal{
-		Block:   0,
-		LeafLow: leafLow,
+		Block:    0,
+		LeafLow:  leafLow,
 		LeafHigh: leafHigh,
 	})
 

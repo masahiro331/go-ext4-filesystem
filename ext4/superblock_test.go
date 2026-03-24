@@ -9,13 +9,13 @@ import (
 
 func TestGetGroupDescriptorTableCount(t *testing.T) {
 	tests := []struct {
-		name           string
-		blockCountLo   uint32
-		blockCountHi   uint32
-		blockPerGroup  uint32
-		firstDataBlock uint32
+		name            string
+		blockCountLo    uint32
+		blockCountHi    uint32
+		blockPerGroup   uint32
+		firstDataBlock  uint32
 		featureIncompat uint32 // set FEATURE_INCOMPAT_64BIT if needed
-		want           uint32
+		want            uint32
 	}{
 		{
 			name:          "128MB 4KB blocks: exactly 1 group",
@@ -52,7 +52,7 @@ func TestGetGroupDescriptorTableCount(t *testing.T) {
 		{
 			name:            "64bit mode: BlockCountHi contributes",
 			blockCountLo:    0,
-			blockCountHi:    1,        // total = 1<<32 = 4294967296 blocks
+			blockCountHi:    1, // total = 1<<32 = 4294967296 blocks
 			blockPerGroup:   32768,
 			featureIncompat: FEATURE_INCOMPAT_64BIT,
 			want:            131072, // 4294967296 / 32768
@@ -205,7 +205,7 @@ func TestGetGroupDescriptor_SeekOffset(t *testing.T) {
 	}{
 		{
 			name:           "4KB blocks: GDT at block 1 (byte 4096)",
-			logBlockSize:   2,      // 1024<<2 = 4096
+			logBlockSize:   2, // 1024<<2 = 4096
 			firstDataBlock: 0,
 			blockCountLo:   32768,
 			blockPerGroup:  32768,
@@ -214,7 +214,7 @@ func TestGetGroupDescriptor_SeekOffset(t *testing.T) {
 		},
 		{
 			name:           "1KB blocks: GDT at block 2 (byte 2048)",
-			logBlockSize:   0,      // 1024<<0 = 1024
+			logBlockSize:   0, // 1024<<0 = 1024
 			firstDataBlock: 1,
 			blockCountLo:   8193,
 			blockPerGroup:  8192,

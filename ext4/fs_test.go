@@ -804,8 +804,8 @@ func TestListEntriesDispatchesToHTree(t *testing.T) {
 // and the given file size.
 func buildBlockAddressingInode(directBlocks [12]uint32, singleIndirect, doubleIndirect, tripleIndirect uint32, fileSize int64) *Inode {
 	inode := &Inode{
-		Mode:   0x8000 | 0644,
-		SizeLo: uint32(fileSize),
+		Mode:     0x8000 | 0644,
+		SizeLo:   uint32(fileSize),
 		SizeHigh: uint32(fileSize >> 32),
 	}
 	ba := BlockAddressing{
@@ -861,7 +861,7 @@ func TestGetBlockAddressesSparseIndirectBlock(t *testing.T) {
 	// Contains: [100, 0, 200] — middle entry is a hole
 	indirectBlock := make([]byte, blockSize)
 	binary.LittleEndian.PutUint32(indirectBlock[0:], 100)
-	binary.LittleEndian.PutUint32(indirectBlock[4:], 0)   // hole
+	binary.LittleEndian.PutUint32(indirectBlock[4:], 0) // hole
 	binary.LittleEndian.PutUint32(indirectBlock[8:], 200)
 	copy(image[16*blockSize:], indirectBlock)
 
