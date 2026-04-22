@@ -605,9 +605,9 @@ func (ext4 *FileSystem) ReadLink(name string) (string, error) {
 
 	// Depending on the target size, it is stored either in the inode block or the extents
 	targetSize := inode.GetSize()
-	if !inode.UsesExtents() {
-		path := string(inode.BlockOrExtents[:targetSize])
-		return filepath.Clean(path), nil
+	if !inode.UsesExtents() && targetSize <= int64(len(inode.BlockOrExtents)) {
+		target := string(inode.BlockOrExtents[:targetSize])
+		return filepath.Clean(target), nil
 	}
 
 	// For symlinks stored in extents, read the target using the File abstraction
