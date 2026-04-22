@@ -626,7 +626,7 @@ func (ext4 *FileSystem) ReadLink(name string) (string, error) {
 }
 
 func (ext4 *FileSystem) Lstat(name string) (fs.FileInfo, error) {
-	return ext4.Stat(name)
+	return ext4.ReadDirInfo(name)
 }
 
 func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, error) {
