@@ -88,7 +88,6 @@ func (fi FileInfo) Mode() fs.FileMode {
 	case FileTypeSymlink:
 		mode |= fs.ModeSymlink
 	case FileTypeRegular:
-		// regular file
 	case FileTypeBlockDevice:
 		mode |= fs.ModeDevice
 	case FileTypeDir:
