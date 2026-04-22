@@ -560,7 +560,13 @@ func (ext4 *FileSystem) openWithDepth(name string, symlinkDepth int) (fs.File, e
 			if symlinkDepth >= maxSymlinkDepth {
 				return nil, ext4.wrapError(op, name, xerrors.New("too many levels of symbolic links"))
 			}
-			link, err := ext4.ReadLink(name)
+			fi := FileInfo{
+				name:  fileName,
+				ino:   dir.ino,
+				inode: dir.inode,
+				mode:  fs.FileMode(dir.inode.Mode),
+			}
+			link, err := ext4.readLink(fi, name)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to read link: %w", err)
 			}
@@ -598,10 +604,14 @@ func (ext4 *FileSystem) ReadLink(name string) (string, error) {
 	if !ok {
 		return "", xerrors.Errorf("unspecified error, entry is not file info %+v", fi)
 	}
-	inode := fi.inode
-	if !inode.IsSymlink() {
+	if !fi.inode.IsSymlink() {
 		return "", xerrors.Errorf("file is not symlink: %w", fs.ErrInvalid)
 	}
+	return ext4.readLink(fi, name)
+}
+
+func (ext4 *FileSystem) readLink(fi FileInfo, name string) (string, error) {
+	inode := fi.inode
 
 	// Depending on the target size, it is stored either in the inode block or the extents
 	targetSize := inode.GetSize()
