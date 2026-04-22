@@ -93,31 +93,31 @@ type BlockAddressing struct {
 }
 
 func (i Inode) IsDir() bool {
-	return i.Mode&0xF000 == 0x4000
+	return (i.Mode & FileTypeMask) == FileTypeDir
 }
 
 func (i Inode) IsRegular() bool {
-	return i.Mode&0xF000 == 0x8000
+	return (i.Mode & FileTypeMask) == FileTypeRegular
 }
 
 func (i Inode) IsSocket() bool {
-	return i.Mode&0xF000 == 0xC000
+	return (i.Mode & FileTypeMask) == FileTypeSocket
 }
 
 func (i Inode) IsSymlink() bool {
-	return i.Mode&0xF000 == 0xA000
+	return (i.Mode & FileTypeMask) == FileTypeSymlink
 }
 
 func (i Inode) IsFifo() bool {
-	return i.Mode&0xF000 == 0x1000
+	return (i.Mode & FileTypeMask) == FileTypeFifo
 }
 
 func (i Inode) IsCharDevice() bool {
-	return i.Mode&0xF000 == 0x2000
+	return (i.Mode & FileTypeMask) == FileTypeCharDevice
 }
 
 func (i Inode) IsBlockDevice() bool {
-	return i.Mode&0xF000 == 0x6000
+	return (i.Mode & FileTypeMask) == FileTypeBlockDevice
 }
 
 // UsesExtents

@@ -43,3 +43,15 @@ const (
 	FEATURE_INCOMPAT_INLINE_DATA    = 0x8000
 	FEATURE_INCOMPAT_ENCRYPT        = 0x10000
 )
+
+// File types (upper 4 bits of i_mode)
+const (
+	FileTypeMask        = 0xF000
+	FileTypeSocket      = 0xC000
+	FileTypeSymlink     = 0xA000
+	FileTypeRegular     = 0x8000
+	FileTypeBlockDevice = 0x6000
+	FileTypeDir         = 0x4000
+	FileTypeCharDevice  = 0x2000
+	FileTypeFifo        = 0x1000
+)
