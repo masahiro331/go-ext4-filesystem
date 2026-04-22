@@ -540,7 +540,7 @@ func (ext4 *FileSystem) openWithDepth(name string, symlinkDepth int) (fs.File, e
 		return nil, ext4.wrapError(op, name, fs.ErrInvalid)
 	}
 
-	dirName, fileName := filepath.Split(name)
+	dirName, fileName := path.Split(name)
 	entries, err := ext4.ReadDir(dirName)
 	if err != nil {
 		return nil, ext4.wrapError(op, name, xerrors.Errorf("failed to read directory: %w", err))
@@ -555,20 +555,20 @@ func (ext4 *FileSystem) openWithDepth(name string, symlinkDepth int) (fs.File, e
 			return nil, xerrors.Errorf("unspecified error, entry is not dir entry %+v", entry)
 		}
 
+		fi := FileInfo{
+			name:  fileName,
+			ino:   dir.ino,
+			inode: dir.inode,
+		}
+
 		// Resolve symlinks
 		if dir.inode.IsSymlink() {
 			if symlinkDepth >= maxSymlinkDepth {
 				return nil, ext4.wrapError(op, name, xerrors.New("too many levels of symbolic links"))
 			}
-			fi := FileInfo{
-				name:  fileName,
-				ino:   dir.ino,
-				inode: dir.inode,
-				mode:  fs.FileMode(dir.inode.Mode),
-			}
 			link, err := ext4.readLink(fi, name)
 			if err != nil {
-				return nil, xerrors.Errorf("failed to read link: %w", err)
+				return nil, ext4.wrapError(op, name, xerrors.Errorf("failed to read link: %w", err))
 			}
 			if !path.IsAbs(link) {
 				link = path.Join(dirName, link)
@@ -576,11 +576,6 @@ func (ext4 *FileSystem) openWithDepth(name string, symlinkDepth int) (fs.File, e
 			return ext4.openWithDepth(link, symlinkDepth+1)
 		}
 
-		fi := FileInfo{
-			name:  fileName,
-			ino:   dir.ino,
-			inode: dir.inode,
-		}
 		var f *File
 		if fi.inode.UsesExtents() {
 			f, err = ext4.file(fi, name)
@@ -617,7 +612,7 @@ func (ext4 *FileSystem) readLink(fi FileInfo, name string) (string, error) {
 	targetSize := inode.GetSize()
 	if !inode.UsesExtents() && targetSize <= int64(len(inode.BlockOrExtents)) {
 		target := string(inode.BlockOrExtents[:targetSize])
-		return filepath.Clean(target), nil
+		return path.Clean(target), nil
 	}
 
 	// For symlinks stored in extents, read the target using the File abstraction
@@ -632,7 +627,7 @@ func (ext4 *FileSystem) readLink(fi FileInfo, name string) (string, error) {
 		return "", xerrors.Errorf("failed to read symlink target: %w", err)
 	}
 
-	return filepath.Clean(string(target)), nil
+	return path.Clean(string(target)), nil
 }
 
 func (ext4 *FileSystem) Lstat(name string) (fs.FileInfo, error) {
