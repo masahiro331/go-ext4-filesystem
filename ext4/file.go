@@ -82,20 +82,20 @@ func (fi FileInfo) Mode() fs.FileMode {
 		mode |= fs.ModeSetuid
 	}
 
-	switch m & 0xF000 {
-	case 0xC000:
+	switch m & FileTypeMask {
+	case FileTypeSocket:
 		mode |= fs.ModeSocket
-	case 0xA000:
+	case FileTypeSymlink:
 		mode |= fs.ModeSymlink
-	case 0x8000:
+	case FileTypeRegular:
 		// regular file
-	case 0x6000:
+	case FileTypeBlockDevice:
 		mode |= fs.ModeDevice
-	case 0x4000:
+	case FileTypeDir:
 		mode |= fs.ModeDir
-	case 0x2000:
+	case FileTypeCharDevice:
 		mode |= fs.ModeCharDevice | fs.ModeDevice
-	case 0x1000:
+	case FileTypeFifo:
 		mode |= fs.ModeNamedPipe
 	default:
 		mode |= fs.ModeIrregular
