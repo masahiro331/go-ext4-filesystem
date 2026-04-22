@@ -17,8 +17,6 @@ var (
 	_ fs.FS        = &FileSystem{}
 	_ fs.ReadDirFS = &FileSystem{}
 	_ fs.StatFS    = &FileSystem{}
-
-	ErrOpenSymlink = xerrors.New("open symlink does not support")
 )
 
 // FileSystem is implemented io/fs interface
@@ -347,8 +345,14 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		if !ok {
 			return nil, xerrors.Errorf("unspecified error, entry is not dir entry %+v", entry)
 		}
-		if dir.inode.Mode&0xA000 == 0xA000 {
-			return nil, ErrOpenSymlink
+
+		// Resolve symlinks
+		if dir.inode.IsSymlink() {
+			link, err := ext4.ReadLink(dir.name)
+			if err != nil {
+				return nil, xerrors.Errorf("failed to read link: %w", err)
+			}
+			return ext4.Open(link)
 		}
 
 		fi := FileInfo{
@@ -369,6 +373,46 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		return f, nil
 	}
 	return nil, fs.ErrNotExist
+}
+
+func (ext4 *FileSystem) ReadLink(name string) (string, error) {
+	di, err := ext4.ReadDirInfo(name)
+	if err != nil {
+		return "", xerrors.Errorf("failed to read dir info: %w", err)
+	}
+	fi, ok := di.(FileInfo)
+	if !ok {
+		return "", xerrors.Errorf("unspecified error, entry is not file info %+v", fi)
+	}
+	inode := fi.inode
+	if !inode.IsSymlink() {
+		return "", xerrors.Errorf("file is not symlink: %w", fs.ErrInvalid)
+	}
+
+	// Depending on the target size, it is stored either in the inode block or the extents
+	targetSize := inode.GetSize()
+	if !inode.UsesExtents() {
+		path := string(inode.BlockOrExtents[:targetSize])
+		return filepath.Clean(path), nil
+	}
+
+	// For symlinks stored in extents, read the target using the File abstraction
+	f, err := ext4.file(fi, name)
+	if err != nil {
+		return "", xerrors.Errorf("failed to create file reader: %w", err)
+	}
+	defer f.Close()
+
+	target, err := io.ReadAll(f)
+	if err != nil {
+		return "", xerrors.Errorf("failed to read symlink target: %w", err)
+	}
+
+	return filepath.Clean(string(target)), nil
+}
+
+func (ext4 *FileSystem) Lstat(name string) (fs.FileInfo, error) {
+	return ext4.Stat(name)
 }
 
 func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, error) {

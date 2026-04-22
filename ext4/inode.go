@@ -81,19 +81,19 @@ type BlockAddressing struct {
 }
 
 func (i Inode) IsDir() bool {
-	return i.Mode&0x4000 != 0 && i.Mode&0x8000 == 0
+	return (i.Mode & FileTypeMask) == FileTypeDir
 }
 
 func (i Inode) IsRegular() bool {
-	return i.Mode&0x8000 != 0 && i.Mode&0x4000 == 0
+	return (i.Mode & FileTypeMask) == FileTypeRegular
 }
 
 func (i Inode) IsSocket() bool {
-	return i.Mode&0xC000 != 0
+	return (i.Mode & FileTypeMask) == FileTypeSocket
 }
 
 func (i Inode) IsSymlink() bool {
-	return i.Mode&0xA000 != 0
+	return (i.Mode & FileTypeMask) == FileTypeSymlink
 }
 
 // UsesExtents
