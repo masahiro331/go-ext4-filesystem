@@ -523,7 +523,16 @@ func (ext4 *FileSystem) ReadDirInfo(name string) (fs.FileInfo, error) {
 	return nil, fs.ErrNotExist
 }
 
+// maxSymlinkDepth is the maximum number of symlink resolutions allowed
+// before returning an error, to prevent infinite loops.
+// This matches the Linux kernel's MAXSYMLINKS.
+const maxSymlinkDepth = 40
+
 func (ext4 *FileSystem) Open(name string) (fs.File, error) {
+	return ext4.openWithDepth(name, 0)
+}
+
+func (ext4 *FileSystem) openWithDepth(name string, symlinkDepth int) (fs.File, error) {
 	const op = "open"
 
 	name = strings.TrimPrefix(name, "/")
@@ -545,13 +554,20 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		if !ok {
 			return nil, xerrors.Errorf("unspecified error, entry is not dir entry %+v", entry)
 		}
+
 		// Resolve symlinks
 		if dir.inode.IsSymlink() {
-			link, err := ext4.ReadLink(dir.name)
+			if symlinkDepth >= maxSymlinkDepth {
+				return nil, ext4.wrapError(op, name, xerrors.New("too many levels of symbolic links"))
+			}
+			link, err := ext4.ReadLink(name)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to read link: %w", err)
 			}
-			return ext4.Open(link)
+			if !path.IsAbs(link) {
+				link = path.Join(dirName, link)
+			}
+			return ext4.openWithDepth(link, symlinkDepth+1)
 		}
 
 		fi := FileInfo{
