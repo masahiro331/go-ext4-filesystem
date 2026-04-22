@@ -92,31 +92,31 @@ type BlockAddressing struct {
 	TripleIndirectBlock uint32     `struc:"uint32,little"`
 }
 
-func (i Inode) IsDir() bool {
+func (i *Inode) IsDir() bool {
 	return (i.Mode & FileTypeMask) == FileTypeDir
 }
 
-func (i Inode) IsRegular() bool {
+func (i *Inode) IsRegular() bool {
 	return (i.Mode & FileTypeMask) == FileTypeRegular
 }
 
-func (i Inode) IsSocket() bool {
+func (i *Inode) IsSocket() bool {
 	return (i.Mode & FileTypeMask) == FileTypeSocket
 }
 
-func (i Inode) IsSymlink() bool {
+func (i *Inode) IsSymlink() bool {
 	return (i.Mode & FileTypeMask) == FileTypeSymlink
 }
 
-func (i Inode) IsFifo() bool {
+func (i *Inode) IsFifo() bool {
 	return (i.Mode & FileTypeMask) == FileTypeFifo
 }
 
-func (i Inode) IsCharDevice() bool {
+func (i *Inode) IsCharDevice() bool {
 	return (i.Mode & FileTypeMask) == FileTypeCharDevice
 }
 
-func (i Inode) IsBlockDevice() bool {
+func (i *Inode) IsBlockDevice() bool {
 	return (i.Mode & FileTypeMask) == FileTypeBlockDevice
 }
 
