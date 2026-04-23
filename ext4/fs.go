@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/lunixbochs/struc"
@@ -103,7 +102,7 @@ func (ext4 *FileSystem) readDirEntry(name string) ([]fs.DirEntry, error) {
 	}
 
 	var currentIno int64
-	cleanedPath := filepath.ToSlash(filepath.Clean(name))
+	cleanedPath := path.Clean(name)
 	dirs := strings.Split(strings.Trim(cleanedPath, "/"), "/")
 	if len(dirs) == 1 && (dirs[0] == "." || dirs[0] == "") {
 		var dirEntries []fs.DirEntry
