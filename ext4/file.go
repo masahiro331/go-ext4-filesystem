@@ -34,8 +34,6 @@ type FileInfo struct {
 	name  string
 	inode *Inode
 	ino   int64
-
-	mode fs.FileMode
 }
 
 // Type dirEntry is implemented io/fs DirEntry interface
@@ -71,7 +69,38 @@ func (fi FileInfo) Size() int64 {
 }
 
 func (fi FileInfo) Mode() fs.FileMode {
-	return fi.mode
+	m := fi.inode.Mode
+	mode := fs.FileMode(m & 0o777)
+
+	if m&0o1000 != 0 {
+		mode |= fs.ModeSticky
+	}
+	if m&0o2000 != 0 {
+		mode |= fs.ModeSetgid
+	}
+	if m&0o4000 != 0 {
+		mode |= fs.ModeSetuid
+	}
+
+	switch m & FileTypeMask {
+	case FileTypeSocket:
+		mode |= fs.ModeSocket
+	case FileTypeSymlink:
+		mode |= fs.ModeSymlink
+	case FileTypeRegular:
+	case FileTypeBlockDevice:
+		mode |= fs.ModeDevice
+	case FileTypeDir:
+		mode |= fs.ModeDir
+	case FileTypeCharDevice:
+		mode |= fs.ModeCharDevice | fs.ModeDevice
+	case FileTypeFifo:
+		mode |= fs.ModeNamedPipe
+	default:
+		mode |= fs.ModeIrregular
+	}
+
+	return mode
 }
 
 func (fi FileInfo) ModTime() time.Time {
@@ -106,13 +135,12 @@ func (f *File) Read(p []byte) (n int, err error) {
 
 	offset, ok := f.table[f.currentBlock]
 	if !ok {
-		// blockSize: 512
-		// size: 2000
-		// 2000 - 512 * 3 = 464 < 512
-		if f.Size()-f.blockSize*f.currentBlock < f.blockSize {
-			f.buffer.Write(make([]byte, f.Size()-f.blockSize*f.currentBlock))
+		remaining := f.Size() - f.blockSize*f.currentBlock
+		if remaining < f.blockSize {
+			f.buffer.Write(make([]byte, remaining))
+		} else {
+			f.buffer.Write(make([]byte, f.blockSize))
 		}
-		f.buffer.Write(make([]byte, f.blockSize))
 	} else {
 		_, err := f.fs.r.Seek(offset, io.SeekStart)
 		if err != nil {

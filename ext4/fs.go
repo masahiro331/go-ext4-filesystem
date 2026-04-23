@@ -63,7 +63,7 @@ func NewFS(r io.SectionReader, cache Cache[string, any]) (*FileSystem, error) {
 		return nil, xerrors.Errorf("failed to parse super block: %w", err)
 	}
 
-	numBlockGroups := (sb.GetBlockCount() + int64(sb.BlockPerGroup) - 1) / int64(sb.BlockPerGroup)
+	numBlockGroups := int64(sb.GetGroupDescriptorTableCount())
 	numBlockGroups2 := (sb.InodeCount + sb.InodePerGroup - 1) / sb.InodePerGroup
 	if numBlockGroups != int64(numBlockGroups2) {
 		return nil, xerrors.Errorf("Block/inode mismatch: %d %d %d", sb.GetBlockCount(), numBlockGroups, numBlockGroups2)
@@ -105,7 +105,7 @@ func (ext4 *FileSystem) readDirEntry(name string) ([]fs.DirEntry, error) {
 	var currentIno int64
 	cleanedPath := filepath.ToSlash(filepath.Clean(name))
 	dirs := strings.Split(strings.Trim(cleanedPath, "/"), "/")
-	if len(dirs) == 1 && dirs[0] == "." || dirs[0] == "" {
+	if len(dirs) == 1 && (dirs[0] == "." || dirs[0] == "") {
 		var dirEntries []fs.DirEntry
 		for _, fileInfo := range fileInfos {
 			if fileInfo.Name() == "." || fileInfo.Name() == ".." {
@@ -173,7 +173,6 @@ func (ext4 *FileSystem) listFileInfo(ino int64) ([]FileInfo, error) {
 				name:  entry.Name,
 				ino:   int64(entry.Inode),
 				inode: inode,
-				mode:  fs.FileMode(inode.Mode),
 			},
 		)
 	}
@@ -198,19 +197,24 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 			break
 		}
 
-		align := dirEntry.RecLen - uint16(dirEntry.NameLen+8)
+		nameAndHeader := uint16(dirEntry.NameLen) + 8
+		if dirEntry.RecLen < nameAndHeader {
+			break
+		}
+		align := dirEntry.RecLen - nameAndHeader
+		if int(align) > directoryReader.Len() {
+			break
+		}
 		_, err = directoryReader.Read(make([]byte, align))
 		if err != nil {
 			return nil, xerrors.Errorf("failed to read align: %w", err)
 		}
 
+		// inode == 0 means the entry is unused (deleted or padding such as checksum tail).
+		if dirEntry.Inode == 0 {
+			continue
+		}
 		if dirEntry.Name == "." || dirEntry.Name == ".." {
-			continue
-		}
-		if dirEntry.Flags == 0xDE {
-			continue
-		}
-		if dirEntry.Flags == 0 {
 			continue
 		}
 
@@ -220,10 +224,204 @@ func extractDirectoryEntries(directoryReader *bytes.Buffer) ([]DirectoryEntry2, 
 	return dirEntries, nil
 }
 
+// buildDirectoryBlockMap builds a mapping from logical directory block numbers
+// to physical byte offsets for the given inode.
+func (ext4 *FileSystem) buildDirectoryBlockMap(inode *Inode) (map[uint32]int64, error) {
+	blockSize := ext4.sb.GetBlockSize()
+	m := make(map[uint32]int64)
+
+	if inode.UsesExtents() {
+		extents, err := ext4.Extents(inode)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to get extents: %w", err)
+		}
+		for _, e := range extents {
+			if e.IsUninitialized() {
+				return nil, xerrors.Errorf("failed to build directory block map: uninitialized extent at logical block %d", e.Block)
+			}
+			for i := uint32(0); i < uint32(e.GetLen()); i++ {
+				m[e.Block+i] = (e.offset() + int64(i)) * blockSize
+			}
+		}
+	} else {
+		blockAddresses, err := inode.GetBlockAddresses(ext4)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to get block addresses: %w", err)
+		}
+		for i, addr := range blockAddresses {
+			if addr == 0 {
+				continue
+			}
+			m[uint32(i)] = int64(addr) * blockSize
+		}
+	}
+
+	return m, nil
+}
+
+// readLogicalBlock reads a single logical block using a pre-built block map.
+func (ext4 *FileSystem) readLogicalBlock(blockMap map[uint32]int64, logicalBlock uint32) ([]byte, error) {
+	offset, ok := blockMap[logicalBlock]
+	if !ok {
+		return nil, xerrors.Errorf("logical block %d not found in block map", logicalBlock)
+	}
+
+	buf := make([]byte, ext4.sb.GetBlockSize())
+	_, err := ext4.r.ReadAt(buf, offset)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read block at offset %#x: %w", offset, err)
+	}
+	return buf, nil
+}
+
+// parseDxBlockNumbers extracts logical block numbers from dx_entry data.
+// data starts right after the DxCountLimit (at the block field of the header entry).
+func parseDxBlockNumbers(data []byte, count uint16) []uint32 {
+	blocks := make([]uint32, 0, count)
+
+	if count == 0 {
+		return blocks
+	}
+
+	// Header entry: only the block field (4 bytes, no hash)
+	if len(data) < 4 {
+		return blocks
+	}
+	blocks = append(blocks, binary.LittleEndian.Uint32(data[:4]))
+
+	// Remaining entries: each 8 bytes (hash:4 + block:4)
+	for i := uint16(1); i < count; i++ {
+		off := int(4 + (i-1)*8)
+		if off+8 > len(data) {
+			break
+		}
+		blocks = append(blocks, binary.LittleEndian.Uint32(data[off+4:off+8]))
+	}
+
+	return blocks
+}
+
+// collectLeafBlocks recursively traverses HTree internal nodes to collect
+// all leaf block numbers.
+func (ext4 *FileSystem) collectLeafBlocks(blockMap map[uint32]int64, nodeBlocks []uint32, remainingDepth uint8) ([]uint32, error) {
+	if remainingDepth == 0 {
+		return nodeBlocks, nil
+	}
+
+	var leafBlocks []uint32
+	for _, nodeBlock := range nodeBlocks {
+		data, err := ext4.readLogicalBlock(blockMap, nodeBlock)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read internal node block %d: %w", nodeBlock, err)
+		}
+
+		// Internal node layout:
+		// 0x00-0x07: fake dirent (8 bytes)
+		// 0x08-0x0B: DxCountLimit (4 bytes)
+		// 0x0C+: dx_entry data (block0 + remaining entries)
+		if len(data) < 0x0C {
+			return nil, xerrors.New("htree internal node block too small")
+		}
+
+		var cl DxCountLimit
+		if err := binary.Read(bytes.NewReader(data[0x08:0x0C]), binary.LittleEndian, &cl); err != nil {
+			return nil, xerrors.Errorf("failed to parse dx_countlimit in internal node: %w", err)
+		}
+		if cl.Count > cl.Limit {
+			return nil, xerrors.Errorf("htree internal node: count (%d) exceeds limit (%d)", cl.Count, cl.Limit)
+		}
+
+		childBlocks := parseDxBlockNumbers(data[0x0C:], cl.Count)
+
+		leaves, err := ext4.collectLeafBlocks(blockMap, childBlocks, remainingDepth-1)
+		if err != nil {
+			return nil, err
+		}
+		leafBlocks = append(leafBlocks, leaves...)
+	}
+
+	return leafBlocks, nil
+}
+
+// listEntriesHTree reads all directory entries from an HTree-indexed directory
+// by traversing the hash tree structure and reading only leaf blocks.
+func (ext4 *FileSystem) listEntriesHTree(inode *Inode) ([]DirectoryEntry2, error) {
+	blockMap, err := ext4.buildDirectoryBlockMap(inode)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to build block map: %w", err)
+	}
+
+	// Read root block (logical block 0)
+	rootData, err := ext4.readLogicalBlock(blockMap, 0)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to read htree root block: %w", err)
+	}
+
+	// Root block layout:
+	// 0x00-0x0B: dot entry (12 bytes)
+	// 0x0C-0x17: dotdot entry (12 bytes)
+	// 0x18-0x1F: DxRootInfo (8 bytes)
+	// 0x20-0x23: DxCountLimit (4 bytes)
+	// 0x24+: dx_entry data (block0 + remaining entries)
+	if len(rootData) < 0x24 {
+		return nil, xerrors.New("htree root block too small")
+	}
+
+	var rootInfo DxRootInfo
+	if err := binary.Read(bytes.NewReader(rootData[0x18:0x20]), binary.LittleEndian, &rootInfo); err != nil {
+		return nil, xerrors.Errorf("failed to parse dx_root_info: %w", err)
+	}
+	maxLevels := uint8(2)
+	if ext4.sb.FeatureIncompatLargedir() {
+		maxLevels = 3
+	}
+	if rootInfo.IndirectLevels > maxLevels {
+		return nil, xerrors.Errorf("htree indirect_levels (%d) exceeds maximum (%d)", rootInfo.IndirectLevels, maxLevels)
+	}
+
+	var cl DxCountLimit
+	if err := binary.Read(bytes.NewReader(rootData[0x20:0x24]), binary.LittleEndian, &cl); err != nil {
+		return nil, xerrors.Errorf("failed to parse dx_countlimit: %w", err)
+	}
+	if cl.Count > cl.Limit {
+		return nil, xerrors.Errorf("htree root: count (%d) exceeds limit (%d)", cl.Count, cl.Limit)
+	}
+
+	// Collect block numbers from root dx_entries
+	rootBlocks := parseDxBlockNumbers(rootData[0x24:], cl.Count)
+
+	// Traverse tree to collect all leaf block numbers
+	leafBlocks, err := ext4.collectLeafBlocks(blockMap, rootBlocks, rootInfo.IndirectLevels)
+	if err != nil {
+		return nil, xerrors.Errorf("failed to collect htree leaf blocks: %w", err)
+	}
+
+	// Read directory entries from each leaf block
+	var entries []DirectoryEntry2
+	for _, logBlock := range leafBlocks {
+		data, err := ext4.readLogicalBlock(blockMap, logBlock)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to read leaf block %d: %w", logBlock, err)
+		}
+
+		dirEntries, err := extractDirectoryEntries(bytes.NewBuffer(data))
+		if err != nil {
+			return nil, xerrors.Errorf("failed to extract directory entries from leaf block %d: %w", logBlock, err)
+		}
+		entries = append(entries, dirEntries...)
+	}
+
+	return entries, nil
+}
+
 func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 	inode, err := ext4.getInode(ino)
 	if err != nil {
-		return nil, xerrors.Errorf("failed to get root inode: %w", err)
+		return nil, xerrors.Errorf("failed to get inode(%d): %w", ino, err)
+	}
+
+	if inode.UsesDirectoryHashTree() {
+		return ext4.listEntriesHTree(inode)
 	}
 
 	if !inode.UsesExtents() {
@@ -234,18 +432,19 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 			return nil, xerrors.Errorf("failed to get block address: %w", err)
 		}
 
+		blockSize := ext4.sb.GetBlockSize()
 		for _, blockAddress := range blockAddresses {
-			_, err = ext4.r.Seek(int64(blockAddress)*ext4.sb.GetBlockSize(), 0)
-			if err != nil {
-				return nil, xerrors.Errorf("failed to seek: %w", err)
+			if blockAddress == 0 {
+				continue
 			}
 
-			directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize())
+			buf := make([]byte, blockSize)
+			_, err = ext4.r.ReadAt(buf, int64(blockAddress)*blockSize)
 			if err != nil {
-				return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+				return nil, xerrors.Errorf("failed to read directory block at %#x: %w", blockAddress, err)
 			}
 
-			extracted, err := extractDirectoryEntries(directoryReader)
+			extracted, err := extractDirectoryEntries(bytes.NewBuffer(buf))
 			if err != nil {
 				return nil, xerrors.Errorf("failed to extract directory entries: %w", err)
 			}
@@ -259,18 +458,20 @@ func (ext4 *FileSystem) listEntries(ino int64) ([]DirectoryEntry2, error) {
 		return nil, xerrors.Errorf("failed to get extents: %w", err)
 	}
 
+	blockSize := ext4.sb.GetBlockSize()
 	var entries []DirectoryEntry2
 	for _, e := range extents {
-		_, err := ext4.r.Seek(e.offset()*ext4.sb.GetBlockSize(), 0)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to seek: %w", err)
+		if e.IsUninitialized() {
+			return nil, xerrors.Errorf("failed to list directory entries: uninitialized extent at logical block %d", e.Block)
 		}
-		directoryReader, err := readBlock(ext4.r, ext4.sb.GetBlockSize()*int64(e.Len))
+		size := blockSize * int64(e.GetLen())
+		buf := make([]byte, size)
+		_, err := ext4.r.ReadAt(buf, e.offset()*blockSize)
 		if err != nil {
-			return nil, xerrors.Errorf("failed to read directory entry: %w", err)
+			return nil, xerrors.Errorf("failed to read directory blocks at offset %#x: %w", e.offset()*blockSize, err)
 		}
 
-		dirEntries, err := extractDirectoryEntries(directoryReader)
+		dirEntries, err := extractDirectoryEntries(bytes.NewBuffer(buf))
 		if err != nil {
 			return nil, xerrors.Errorf("failed to extract directory entries: %w", err)
 		}
@@ -306,7 +507,6 @@ func (ext4 *FileSystem) ReadDirInfo(name string) (fs.FileInfo, error) {
 		return FileInfo{
 			name:  "/",
 			inode: inode,
-			mode:  fs.FileMode(inode.Mode),
 		}, nil
 	}
 	name = strings.TrimRight(name, "/")
@@ -345,7 +545,6 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		if !ok {
 			return nil, xerrors.Errorf("unspecified error, entry is not dir entry %+v", entry)
 		}
-
 		// Resolve symlinks
 		if dir.inode.IsSymlink() {
 			link, err := ext4.ReadLink(dir.name)
@@ -359,7 +558,6 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 			name:  fileName,
 			ino:   dir.ino,
 			inode: dir.inode,
-			mode:  fs.FileMode(dir.inode.Mode),
 		}
 		var f *File
 		if fi.inode.UsesExtents() {
@@ -423,8 +621,10 @@ func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, erro
 
 	dt := make(dataTable)
 	for i, blockAddress := range blockAddresses {
-		offset := int64(blockAddress) * ext4.sb.GetBlockSize()
-		dt[int64(i)] = offset
+		if blockAddress == 0 {
+			continue
+		}
+		dt[int64(i)] = int64(blockAddress) * ext4.sb.GetBlockSize()
 	}
 
 	return &File{
@@ -440,15 +640,20 @@ func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, erro
 }
 
 func (ext4 *FileSystem) file(fi FileInfo, filePath string) (*File, error) {
-	extents, err := ext4.extents(fi.inode.BlockOrExtents[:], nil)
+	extents, err := ext4.Extents(fi.inode)
 	if err != nil {
 		return nil, err
 	}
 
 	dt := make(dataTable)
 	for _, e := range extents {
+		// Uninitialized (unwritten) extents should read as zeros;
+		// omitting them from the table delegates to the sparse path in Read().
+		if e.IsUninitialized() {
+			continue
+		}
 		offset := e.offset() * ext4.sb.GetBlockSize()
-		for i := int64(0); i < int64(e.Len); i++ {
+		for i := int64(0); i < int64(e.GetLen()); i++ {
 			dt[int64(e.Block)+i] = offset + i*ext4.sb.GetBlockSize()
 		}
 	}

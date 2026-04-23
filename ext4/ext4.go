@@ -20,6 +20,11 @@ Ext4 Block Layout
 +-----------------+------------------+-------------------+---------------------+-------------------+--------------+-------------+------------------+
 */
 
+const (
+	// extentDepthRoot indicates no parent depth to validate against.
+	extentDepthRoot = -1
+)
+
 var (
 	ErrInodeNotFound = xerrors.New("inode not found")
 )
@@ -33,15 +38,18 @@ func Check(r io.Reader) bool {
 }
 
 func (ext4 *FileSystem) Extents(inode *Inode) ([]Extent, error) {
-	extents, err := ext4.extents(inode.BlockOrExtents[:], nil)
+	extents, err := ext4.extents(inode.BlockOrExtents[:], nil, extentDepthRoot)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get extents: %w", err)
 	}
+	sort.Slice(extents, func(i, j int) bool {
+		return extents[i].Block < extents[j].Block
+	})
 	return extents, nil
 }
 
 func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, error) {
-	_, err := r.Seek(sb.GetBlockSize(), 0)
+	_, err := r.Seek(int64(sb.FirstDataBlock+1)*sb.GetBlockSize(), 0)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to seek Group Descriptor offset: %w", err)
 	}
@@ -82,7 +90,7 @@ func (sb Superblock) getGroupDescriptor(r io.SectionReader) ([]GroupDescriptor, 
 func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	c, ok := ext4.cache.Get(inodeCacheKey(inodeAddress))
 	if ok {
-		i := c.(Inode)
+		i, ok := c.(Inode)
 		if ok {
 			return &i, nil
 		}
@@ -97,16 +105,18 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	index := (inodeAddress - 1) % int64(ext4.sb.InodePerGroup)
 	physicalOffset := bgd.GetInodeTableLoc(ext4.sb.FeatureInCompat64bit())*ext4.sb.GetBlockSize() + index*int64(ext4.sb.InodeSize)
 
-	// offset need to 512*N offset
-	inodeOffset := physicalOffset % SectorSize
-	seekOffset := physicalOffset - (physicalOffset % SectorSize)
-	buf := make([]byte, SectorSize)
-	_, err := ext4.r.ReadAt(buf, seekOffset)
+	inodeStructSize := int64(binary.Size(Inode{}))
+	buf := make([]byte, inodeStructSize)
+
+	// Read only the on-disk inode size; for ext2/ext3 (InodeSize=128)
+	// the remaining bytes stay zero, giving safe defaults for extended fields.
+	readSize := inodeStructSize
+	if int64(ext4.sb.InodeSize) < readSize {
+		readSize = int64(ext4.sb.InodeSize)
+	}
+	_, err := ext4.r.ReadAt(buf[:readSize], physicalOffset)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to read inode: %w", err)
-	}
-	if inodeOffset != 0 && int64(len(buf)) > inodeOffset {
-		buf = buf[inodeOffset:]
 	}
 
 	inode := Inode{}
@@ -118,12 +128,28 @@ func (ext4 *FileSystem) getInode(inodeAddress int64) (*Inode, error) {
 	return &inode, nil
 }
 
-func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
+func (ext4 *FileSystem) extents(b []byte, extents []Extent, expectedDepth int) ([]Extent, error) {
 	extentReader := bytes.NewReader(b)
 	extentHeader := &ExtentHeader{}
 	err := binary.Read(extentReader, binary.LittleEndian, extentHeader)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to parse extent header: %w", err)
+	}
+
+	if extentHeader.Magic != 0xF30A {
+		return nil, xerrors.Errorf("invalid extent header magic: %#x", extentHeader.Magic)
+	}
+
+	if extentHeader.Depth > 5 {
+		return nil, xerrors.Errorf("extent tree depth %d exceeds maximum of 5", extentHeader.Depth)
+	}
+
+	if expectedDepth >= 0 && int(extentHeader.Depth) != expectedDepth {
+		return nil, xerrors.Errorf("extent tree depth %d does not match expected %d", extentHeader.Depth, expectedDepth)
+	}
+
+	if extentHeader.Entries > extentHeader.Max {
+		return nil, xerrors.Errorf("extent header entries (%d) exceeds max (%d)", extentHeader.Entries, extentHeader.Max)
 	}
 
 	if extentHeader.Depth == 0 {
@@ -142,26 +168,24 @@ func (ext4 *FileSystem) extents(b []byte, extents []Extent) ([]Extent, error) {
 			if err != nil {
 				return nil, xerrors.Errorf("failed to read internal extent: %w", err)
 			}
-			b := make([]byte, SectorSize)
-			_, err = ext4.r.ReadAt(b, int64(extent.LeafHigh)<<32+int64(extent.LeafLow)*ext4.sb.GetBlockSize())
+			b := make([]byte, ext4.sb.GetBlockSize())
+			physBlock := int64(extent.LeafHigh)<<32 | int64(extent.LeafLow)
+			_, err = ext4.r.ReadAt(b, physBlock*ext4.sb.GetBlockSize())
 			if err != nil {
 				return nil, xerrors.Errorf("failed to read leaf node extent: %w", err)
 			}
 
-			extents, err = ext4.extents(b, extents)
+			extents, err = ext4.extents(b, extents, int(extentHeader.Depth)-1)
 			if err != nil {
 				return nil, xerrors.Errorf("failed to get extents: %w", err)
 			}
 		}
 	}
-	sort.Slice(extents, func(i, j int) bool {
-		return extents[i].Block < extents[j].Block
-	})
 	return extents, nil
 }
 
 func (e *Extent) offset() int64 {
-	return int64(e.StartHi)<<32 + int64(e.StartLo)
+	return int64(e.StartHi)<<32 | int64(e.StartLo)
 }
 
 func divWithRoundUp(a int, b int) int {
