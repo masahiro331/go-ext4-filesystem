@@ -3,6 +3,7 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"io/fs"
 	"strings"
@@ -1632,6 +1633,29 @@ func TestLstatRegularFile(t *testing.T) {
 	}
 	if info.Size() != 13 {
 		t.Errorf("Lstat size = %d, want 13", info.Size())
+	}
+}
+
+func TestLstatNotFoundReturnsPathError(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	_, err := ext4fs.Lstat("nonexistent.txt")
+	if err == nil {
+		t.Fatal("Lstat on missing file should fail")
+	}
+
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("error should wrap *fs.PathError, got %T: %v", err, err)
+	}
+	if pathErr.Op != "lstat" {
+		t.Errorf("Op = %q, want %q", pathErr.Op, "lstat")
+	}
+	if pathErr.Path != "nonexistent.txt" {
+		t.Errorf("Path = %q, want %q", pathErr.Path, "nonexistent.txt")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error should wrap fs.ErrNotExist, got: %v", err)
 	}
 }
 
