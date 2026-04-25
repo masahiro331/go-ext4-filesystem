@@ -3,7 +3,9 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
+	"io/fs"
 	"strings"
 	"testing"
 )
@@ -1419,5 +1421,280 @@ func TestListEntriesBlockAddressingReadAt(t *testing.T) {
 		if !names[expected] {
 			t.Errorf("expected %q in entries", expected)
 		}
+	}
+}
+
+// --- Symlink tests ---
+
+// setExtent writes a single extent (logical block → physical block) into an inode's BlockOrExtents field.
+func setExtent(inode *Inode, logicalBlock uint32, length uint16, physicalBlock uint32) {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, &ExtentHeader{
+		Magic: 0xF30A, Entries: 1, Max: 4, Depth: 0,
+	})
+	binary.Write(&buf, binary.LittleEndian, &Extent{
+		Block: logicalBlock, Len: length, StartHi: 0, StartLo: physicalBlock,
+	})
+	copy(inode.BlockOrExtents[:], buf.Bytes())
+}
+
+// writeInodeToImage serializes an inode and writes it to the correct offset
+// in the image, given the inode table starts at inodeTableBlock.
+func writeInodeToImage(image []byte, inodeNum int, inode *Inode, inodeTableBlock, blockSize, inodeSize int) {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, inode)
+	offset := inodeTableBlock*blockSize + (inodeNum-1)*inodeSize
+	copy(image[offset:], buf.Bytes())
+}
+
+// buildSymlinkTestFS builds an in-memory ext4 filesystem with symlinks for testing.
+//
+// Layout:
+//
+//	Block 2: Inode table
+//	Block 4: Root directory entries
+//	Block 5: "subdir" directory entries
+//	Block 6: "hello.txt" content ("Hello, World!")
+//	Block 7: "subdir/target.txt" content ("Target content")
+//
+// Inodes:
+//
+//	2:  root directory
+//	10: "hello.txt" (regular file)
+//	11: "link.txt" (symlink → "hello.txt")
+//	12: "subdir" (directory)
+//	13: "subdir/target.txt" (regular file)
+//	14: "subdir/rel_link" (symlink → "../hello.txt")
+//	15: "loop1" (symlink → "loop2")
+//	16: "loop2" (symlink → "loop1")
+func buildSymlinkTestFS() *FileSystem {
+	const blockSize = 4096
+	const inodeSize = 256
+
+	totalSize := 8 * blockSize
+	image := make([]byte, totalSize)
+
+	// Root directory entries (block 4)
+	var rootDir []byte
+	rootDir = append(rootDir, buildDirEntry(10, "hello.txt", 1)...)
+	rootDir = append(rootDir, buildDirEntry(11, "link.txt", 7)...)
+	rootDir = append(rootDir, buildDirEntry(12, "subdir", 2)...)
+	rootDir = append(rootDir, buildDirEntry(15, "loop1", 7)...)
+	rootDir = append(rootDir, buildDirEntry(16, "loop2", 7)...)
+	copy(image[4*blockSize:], rootDir)
+
+	// Subdir directory entries (block 5)
+	var subdirDir []byte
+	subdirDir = append(subdirDir, buildDirEntry(13, "target.txt", 1)...)
+	subdirDir = append(subdirDir, buildDirEntry(14, "rel_link", 7)...)
+	copy(image[5*blockSize:], subdirDir)
+
+	// File content
+	copy(image[6*blockSize:], []byte("Hello, World!"))
+	copy(image[7*blockSize:], []byte("Target content"))
+
+	// Inode 2: root directory
+	rootInode := &Inode{Mode: 0x4000 | 0755, Flags: EXTENTS_FL, SizeLo: uint32(blockSize)}
+	setExtent(rootInode, 0, 1, 4)
+	writeInodeToImage(image, 2, rootInode, 2, blockSize, inodeSize)
+
+	// Inode 10: "hello.txt"
+	helloInode := &Inode{Mode: 0x8000 | 0644, Flags: EXTENTS_FL, SizeLo: 13}
+	setExtent(helloInode, 0, 1, 6)
+	writeInodeToImage(image, 10, helloInode, 2, blockSize, inodeSize)
+
+	// Inode 11: symlink "link.txt" → "hello.txt" (inline)
+	linkInode := &Inode{Mode: 0xA000 | 0777, SizeLo: 9}
+	copy(linkInode.BlockOrExtents[:], []byte("hello.txt"))
+	writeInodeToImage(image, 11, linkInode, 2, blockSize, inodeSize)
+
+	// Inode 12: "subdir"
+	subdirInode := &Inode{Mode: 0x4000 | 0755, Flags: EXTENTS_FL, SizeLo: uint32(blockSize)}
+	setExtent(subdirInode, 0, 1, 5)
+	writeInodeToImage(image, 12, subdirInode, 2, blockSize, inodeSize)
+
+	// Inode 13: "subdir/target.txt"
+	targetInode := &Inode{Mode: 0x8000 | 0644, Flags: EXTENTS_FL, SizeLo: 14}
+	setExtent(targetInode, 0, 1, 7)
+	writeInodeToImage(image, 13, targetInode, 2, blockSize, inodeSize)
+
+	// Inode 14: symlink "subdir/rel_link" → "../hello.txt" (inline)
+	relLinkInode := &Inode{Mode: 0xA000 | 0777, SizeLo: 12}
+	copy(relLinkInode.BlockOrExtents[:], []byte("../hello.txt"))
+	writeInodeToImage(image, 14, relLinkInode, 2, blockSize, inodeSize)
+
+	// Inode 15: symlink "loop1" → "loop2" (inline)
+	loop1Inode := &Inode{Mode: 0xA000 | 0777, SizeLo: 5}
+	copy(loop1Inode.BlockOrExtents[:], []byte("loop2"))
+	writeInodeToImage(image, 15, loop1Inode, 2, blockSize, inodeSize)
+
+	// Inode 16: symlink "loop2" → "loop1" (inline)
+	loop2Inode := &Inode{Mode: 0xA000 | 0777, SizeLo: 5}
+	copy(loop2Inode.BlockOrExtents[:], []byte("loop1"))
+	writeInodeToImage(image, 16, loop2Inode, 2, blockSize, inodeSize)
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	return &FileSystem{
+		r:  sr,
+		sb: Superblock{LogBlockSize: 2, InodePerGroup: 64, InodeSize: 256},
+		gds: []GroupDescriptor{
+			{GroupDescriptor32: GroupDescriptor32{InodeTableLo: 2}},
+		},
+		cache: &mockCache[string, any]{},
+	}
+}
+
+func TestReadLinkInline(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	target, err := ext4fs.ReadLink("link.txt")
+	if err != nil {
+		t.Fatalf("ReadLink failed: %v", err)
+	}
+	if target != "hello.txt" {
+		t.Errorf("ReadLink = %q, want %q", target, "hello.txt")
+	}
+}
+
+func TestReadLinkNotSymlink(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	_, err := ext4fs.ReadLink("hello.txt")
+	if err == nil {
+		t.Fatal("ReadLink on regular file should fail")
+	}
+}
+
+func assertFileContent(t *testing.T, ext4fs *FileSystem, path, want string) {
+	t.Helper()
+	f, err := ext4fs.Open(path)
+	if err != nil {
+		t.Fatalf("Open(%q) failed: %v", path, err)
+	}
+	defer f.Close()
+
+	buf := make([]byte, 256)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if got := string(buf[:n]); got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+}
+
+func TestOpenFollowsSymlink(t *testing.T) {
+	assertFileContent(t, buildSymlinkTestFS(), "link.txt", "Hello, World!")
+}
+
+func TestOpenRelativeSymlinkInSubdir(t *testing.T) {
+	assertFileContent(t, buildSymlinkTestFS(), "subdir/rel_link", "Hello, World!")
+}
+
+func TestOpenCircularSymlink(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	_, err := ext4fs.Open("loop1")
+	if err == nil {
+		t.Fatal("Open on circular symlink should fail")
+	}
+	if !strings.Contains(err.Error(), "too many levels of symbolic links") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLstatReturnsSymlinkInfo(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	info, err := ext4fs.Lstat("link.txt")
+	if err != nil {
+		t.Fatalf("Lstat failed: %v", err)
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		t.Error("Lstat should return symlink mode, got non-symlink")
+	}
+	if info.Name() != "link.txt" {
+		t.Errorf("Lstat name = %q, want %q", info.Name(), "link.txt")
+	}
+	if info.Size() != 9 {
+		t.Errorf("Lstat size = %d, want 9 (length of target path)", info.Size())
+	}
+}
+
+func TestLstatRegularFile(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	info, err := ext4fs.Lstat("hello.txt")
+	if err != nil {
+		t.Fatalf("Lstat failed: %v", err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		t.Error("Lstat on regular file should not have symlink mode")
+	}
+	if info.Size() != 13 {
+		t.Errorf("Lstat size = %d, want 13", info.Size())
+	}
+}
+
+func TestLstatNotFoundReturnsPathError(t *testing.T) {
+	ext4fs := buildSymlinkTestFS()
+
+	_, err := ext4fs.Lstat("nonexistent.txt")
+	if err == nil {
+		t.Fatal("Lstat on missing file should fail")
+	}
+
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("error should wrap *fs.PathError, got %T: %v", err, err)
+	}
+	if pathErr.Op != "lstat" {
+		t.Errorf("Op = %q, want %q", pathErr.Op, "lstat")
+	}
+	if pathErr.Path != "nonexistent.txt" {
+		t.Errorf("Path = %q, want %q", pathErr.Path, "nonexistent.txt")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error should wrap fs.ErrNotExist, got: %v", err)
+	}
+}
+
+func TestReadLinkBoundsCheckInline(t *testing.T) {
+	// Symlink inode with targetSize > 60 but no EXTENTS_FL.
+	// Should fall through to the extent path and fail gracefully (not panic).
+	const blockSize = 4096
+	const inodeSize = 256
+
+	totalSize := 5 * blockSize
+	image := make([]byte, totalSize)
+
+	// Root directory at block 4 with one symlink entry
+	var rootDir []byte
+	rootDir = append(rootDir, buildDirEntry(10, "bad_link", 7)...)
+	copy(image[4*blockSize:], rootDir)
+
+	// Inode 2: root directory
+	rootInode := &Inode{Mode: 0x4000 | 0755, Flags: EXTENTS_FL, SizeLo: uint32(blockSize)}
+	setExtent(rootInode, 0, 1, 4)
+	writeInodeToImage(image, 2, rootInode, 2, blockSize, inodeSize)
+
+	// Inode 10: symlink with corrupt size (100 > 60), no EXTENTS_FL, no valid extent data
+	badInode := &Inode{Mode: 0xA000 | 0777, SizeLo: 100}
+	copy(badInode.BlockOrExtents[:], []byte("short"))
+	writeInodeToImage(image, 10, badInode, 2, blockSize, inodeSize)
+
+	sr := io.NewSectionReader(bytes.NewReader(image), 0, int64(totalSize))
+	ext4fs := &FileSystem{
+		r:  sr,
+		sb: Superblock{LogBlockSize: 2, InodePerGroup: 64, InodeSize: 256},
+		gds: []GroupDescriptor{
+			{GroupDescriptor32: GroupDescriptor32{InodeTableLo: 2}},
+		},
+		cache: &mockCache[string, any]{},
+	}
+
+	_, err := ext4fs.ReadLink("bad_link")
+	if err == nil {
+		t.Fatal("ReadLink with corrupt targetSize should fail")
 	}
 }
