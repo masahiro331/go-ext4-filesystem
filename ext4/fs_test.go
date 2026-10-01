@@ -1421,3 +1421,39 @@ func TestListEntriesBlockAddressingReadAt(t *testing.T) {
 		}
 	}
 }
+
+func TestNewFSRejectsZeroGroupSizes(t *testing.T) {
+	tests := []struct {
+		name string
+		sb   Superblock
+	}{
+		{
+			name: "zero blocks per group",
+			sb:   Superblock{Magic: 0xEF53, BlockCountLo: 8192, InodeCount: 16, InodePerGroup: 16},
+		},
+		{
+			name: "zero inodes per group",
+			sb:   Superblock{Magic: 0xEF53, BlockCountLo: 8192, InodeCount: 16, BlockPerGroup: 8192},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			buf.Write(make([]byte, GroupZeroPadding))
+			if err := binary.Write(&buf, binary.LittleEndian, &tt.sb); err != nil {
+				t.Fatal(err)
+			}
+			image := buf.Bytes()
+
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("NewFS panicked: %v", r)
+				}
+			}()
+			if _, err := NewFS(*io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image))), nil); err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+		})
+	}
+}
