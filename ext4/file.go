@@ -2,6 +2,7 @@ package ext4
 
 import (
 	"bytes"
+	"errors"
 	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
@@ -153,7 +154,7 @@ func (f *File) Read(p []byte) (n int, err error) {
 			return 0, xerrors.Errorf("failed to read block: actual(%d), expected(%d): %w", rn, len(b), err)
 		}
 		// io.ReaderAt may return io.EOF along with a full read at the end of the input.
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return 0, xerrors.Errorf("failed to read block: %w", err)
 		}
 
