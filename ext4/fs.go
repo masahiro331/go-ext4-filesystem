@@ -52,6 +52,10 @@ func parseSuperBlock(r io.Reader) (Superblock, error) {
 	if sb.Magic != 0xEF53 {
 		return Superblock{}, xerrors.New("unsupported block")
 	}
+	if sb.BlockPerGroup == 0 || sb.InodePerGroup == 0 {
+		return Superblock{}, xerrors.Errorf("invalid super block: blocks per group %d, inodes per group %d",
+			sb.BlockPerGroup, sb.InodePerGroup)
+	}
 	return sb, nil
 }
 
