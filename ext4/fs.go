@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/lunixbochs/struc"
@@ -103,7 +102,7 @@ func (ext4 *FileSystem) readDirEntry(name string) ([]fs.DirEntry, error) {
 	}
 
 	var currentIno int64
-	cleanedPath := filepath.ToSlash(filepath.Clean(name))
+	cleanedPath := path.Clean(name)
 	dirs := strings.Split(strings.Trim(cleanedPath, "/"), "/")
 	if len(dirs) == 1 && (dirs[0] == "." || dirs[0] == "") {
 		var dirEntries []fs.DirEntry
@@ -523,7 +522,16 @@ func (ext4 *FileSystem) ReadDirInfo(name string) (fs.FileInfo, error) {
 	return nil, fs.ErrNotExist
 }
 
+// maxSymlinkDepth is the maximum number of symlink resolutions allowed
+// before returning an error, to prevent infinite loops.
+// This matches the Linux kernel's MAXSYMLINKS.
+const maxSymlinkDepth = 40
+
 func (ext4 *FileSystem) Open(name string) (fs.File, error) {
+	return ext4.openWithDepth(name, 0)
+}
+
+func (ext4 *FileSystem) openWithDepth(name string, symlinkDepth int) (fs.File, error) {
 	const op = "open"
 
 	name = strings.TrimPrefix(name, "/")
@@ -531,7 +539,7 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		return nil, ext4.wrapError(op, name, fs.ErrInvalid)
 	}
 
-	dirName, fileName := filepath.Split(name)
+	dirName, fileName := path.Split(name)
 	entries, err := ext4.ReadDir(dirName)
 	if err != nil {
 		return nil, ext4.wrapError(op, name, xerrors.Errorf("failed to read directory: %w", err))
@@ -545,20 +553,28 @@ func (ext4 *FileSystem) Open(name string) (fs.File, error) {
 		if !ok {
 			return nil, xerrors.Errorf("unspecified error, entry is not dir entry %+v", entry)
 		}
-		// Resolve symlinks
-		if dir.inode.IsSymlink() {
-			link, err := ext4.ReadLink(dir.name)
-			if err != nil {
-				return nil, xerrors.Errorf("failed to read link: %w", err)
-			}
-			return ext4.Open(link)
-		}
 
 		fi := FileInfo{
 			name:  fileName,
 			ino:   dir.ino,
 			inode: dir.inode,
 		}
+
+		// Resolve symlinks
+		if dir.inode.IsSymlink() {
+			if symlinkDepth >= maxSymlinkDepth {
+				return nil, ext4.wrapError(op, name, xerrors.New("too many levels of symbolic links"))
+			}
+			link, err := ext4.readLink(fi, name)
+			if err != nil {
+				return nil, ext4.wrapError(op, name, xerrors.Errorf("failed to read link: %w", err))
+			}
+			if !path.IsAbs(link) {
+				link = path.Join(dirName, link)
+			}
+			return ext4.openWithDepth(link, symlinkDepth+1)
+		}
+
 		var f *File
 		if fi.inode.UsesExtents() {
 			f, err = ext4.file(fi, name)
@@ -582,16 +598,20 @@ func (ext4 *FileSystem) ReadLink(name string) (string, error) {
 	if !ok {
 		return "", xerrors.Errorf("unspecified error, entry is not file info %+v", fi)
 	}
-	inode := fi.inode
-	if !inode.IsSymlink() {
+	if !fi.inode.IsSymlink() {
 		return "", xerrors.Errorf("file is not symlink: %w", fs.ErrInvalid)
 	}
+	return ext4.readLink(fi, name)
+}
+
+func (ext4 *FileSystem) readLink(fi FileInfo, name string) (string, error) {
+	inode := fi.inode
 
 	// Depending on the target size, it is stored either in the inode block or the extents
 	targetSize := inode.GetSize()
-	if !inode.UsesExtents() {
-		path := string(inode.BlockOrExtents[:targetSize])
-		return filepath.Clean(path), nil
+	if !inode.UsesExtents() && targetSize <= int64(len(inode.BlockOrExtents)) {
+		target := string(inode.BlockOrExtents[:targetSize])
+		return path.Clean(target), nil
 	}
 
 	// For symlinks stored in extents, read the target using the File abstraction
@@ -606,11 +626,17 @@ func (ext4 *FileSystem) ReadLink(name string) (string, error) {
 		return "", xerrors.Errorf("failed to read symlink target: %w", err)
 	}
 
-	return filepath.Clean(string(target)), nil
+	return path.Clean(string(target)), nil
 }
 
 func (ext4 *FileSystem) Lstat(name string) (fs.FileInfo, error) {
-	return ext4.Stat(name)
+	const op = "lstat"
+
+	info, err := ext4.ReadDirInfo(name)
+	if err != nil {
+		return nil, ext4.wrapError(op, name, err)
+	}
+	return info, nil
 }
 
 func (ext4 *FileSystem) fileFromBlock(fi FileInfo, filePath string) (*File, error) {
