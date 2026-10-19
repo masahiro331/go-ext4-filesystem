@@ -2,6 +2,7 @@ package ext4
 
 import (
 	"bytes"
+	"errors"
 	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
@@ -142,16 +143,21 @@ func (f *File) Read(p []byte) (n int, err error) {
 			f.buffer.Write(make([]byte, f.blockSize))
 		}
 	} else {
-		_, err := f.fs.r.Seek(offset, io.SeekStart)
-		if err != nil {
-			return 0, xerrors.Errorf("failed to seek block: %w", err)
+		// Use ReadAt instead of Seek+Read so that Files opened from the same
+		// FileSystem can be read concurrently without racing on the shared offset.
+		b := make([]byte, f.blockSize)
+		rn, err := f.fs.r.ReadAt(b, offset)
+		if rn != len(b) {
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return 0, xerrors.Errorf("failed to read block: actual(%d), expected(%d): %w", rn, len(b), err)
 		}
-		buf, err := readBlock(f.fs.r, f.blockSize)
-		if err != nil {
+		// io.ReaderAt may return io.EOF along with a full read at the end of the input.
+		if err != nil && !errors.Is(err, io.EOF) {
 			return 0, xerrors.Errorf("failed to read block: %w", err)
 		}
 
-		b := buf.Bytes()
 		if f.Size()-f.blockSize*f.currentBlock < f.blockSize {
 			b = b[:f.Size()-f.blockSize*f.currentBlock]
 		}
