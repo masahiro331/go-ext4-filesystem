@@ -87,11 +87,12 @@ func TestExtent_IsUninitialized(t *testing.T) {
 		wantN  uint16
 	}{
 		{"initialized: 1 block", 1, false, 1},
-		{"initialized: max (0x7FFF)", 0x7FFF, false, 0x7FFF},
+		{"initialized: 0x7FFF", 0x7FFF, false, 0x7FFF},
+		// EXT_INIT_MAX_LEN: a full initialized extent, not an unwritten one.
+		{"initialized: max (0x8000 = 32768 blocks)", 0x8000, false, 0x8000},
 		{"uninitialized: 1 block (0x8001)", 0x8001, true, 1},
 		{"uninitialized: max (0xFFFF)", 0xFFFF, true, 0x7FFF},
 		{"zero length", 0, false, 0},
-		{"exactly 0x8000 (uninitialized, 0 blocks)", 0x8000, true, 0},
 	}
 
 	for _, tt := range tests {

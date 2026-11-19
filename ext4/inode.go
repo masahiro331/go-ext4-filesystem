@@ -24,16 +24,25 @@ type Extent struct {
 	StartLo uint32 `struc:"uint32,little"`
 }
 
+// maxInitExtentLen is the longest initialized extent (EXT_INIT_MAX_LEN in
+// the kernel). A length of exactly 32768 is an initialized extent of that
+// many blocks; only larger values mark an unwritten extent of Len-32768
+// blocks (ext4_ext_is_unwritten, ext4_ext_get_actual_len).
+const maxInitExtentLen = 0x8000
+
 // IsUninitialized returns true if this extent is unwritten (allocated but
 // not yet written). Reads from such extents should return zeros.
 func (e *Extent) IsUninitialized() bool {
-	return e.Len&0x8000 != 0
+	return e.Len > maxInitExtentLen
 }
 
-// GetLen returns the actual number of blocks, masking off the
-// uninitialized flag in bit 15.
+// GetLen returns the actual number of blocks: Len for initialized extents
+// (up to 32768), Len-32768 for unwritten ones.
 func (e *Extent) GetLen() uint16 {
-	return e.Len & 0x7FFF
+	if e.Len <= maxInitExtentLen {
+		return e.Len
+	}
+	return e.Len - maxInitExtentLen
 }
 
 // DirectoryEntry2 is more or less a flat file that maps an arbitrary byte string
