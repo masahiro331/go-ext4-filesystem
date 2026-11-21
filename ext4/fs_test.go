@@ -1457,6 +1457,9 @@ func TestNewFSRejectsZeroGroupSizes(t *testing.T) {
 				t.Fatal("expected an error, got nil")
 			}
 		})
+	}
+}
+
 // --- Symlink tests ---
 
 // setExtent writes a single extent (logical block → physical block) into an inode's BlockOrExtents field.

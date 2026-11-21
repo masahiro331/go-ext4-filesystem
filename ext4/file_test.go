@@ -283,6 +283,47 @@ func TestFileInfoMode(t *testing.T) {
 	}
 }
 
+// TestFileRead_FullLengthExtent verifies that an initialized extent of the
+// maximum length (Len 0x8000 = 32768 blocks, as mke2fs/the kernel write for
+// large contiguous files) is read, not taken for an unwritten extent.
+func TestFileRead_FullLengthExtent(t *testing.T) {
+	const blockSize = 1024
+	const full = 0x8000
+	const fileSize = blockSize * (full + 1)
+
+	// Physical blocks 0..32767 hold 0xAA, block 32768 holds 0xCC.
+	image := bytes.Repeat([]byte{0xAA}, fileSize)
+	for i := blockSize * full; i < fileSize; i++ {
+		image[i] = 0xCC
+	}
+	r := io.NewSectionReader(bytes.NewReader(image), 0, int64(len(image)))
+
+	var extData [60]byte
+	buf := bytes.NewBuffer(extData[:0])
+	binary.Write(buf, binary.LittleEndian, ExtentHeader{Magic: 0xF30A, Entries: 2, Max: 4, Depth: 0})
+	binary.Write(buf, binary.LittleEndian, Extent{Block: 0, Len: full, StartLo: 0})
+	binary.Write(buf, binary.LittleEndian, Extent{Block: full, Len: 1, StartLo: full})
+	copy(extData[:], buf.Bytes())
+
+	inode := &Inode{SizeLo: fileSize, Flags: EXTENTS_FL}
+	copy(inode.BlockOrExtents[:], extData[:])
+	fs := &FileSystem{r: r, sb: Superblock{LogBlockSize: 0}} // 1024
+
+	f, err := fs.file(FileInfo{name: "test", inode: inode}, "test")
+	if err != nil {
+		t.Fatalf("file() error: %v", err)
+	}
+	data := readAll(t, f)
+	if len(data) != fileSize {
+		t.Fatalf("read %d bytes, want %d", len(data), fileSize)
+	}
+	for i := range data {
+		if data[i] != image[i] {
+			t.Fatalf("byte %d (block %d): got %#x, want %#x", i, i/blockSize, data[i], image[i])
+		}
+	}
+}
+
 // TestFileRead_UninitializedExtentReadsZeros verifies that file() skips
 // uninitialized extents, and Read() returns zeros for those blocks via the
 // sparse path.
